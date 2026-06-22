@@ -40,23 +40,18 @@ mod cli;
 mod jvm;
 
 // Per-OS specifics — the discrete-GPU hint plus the HotSpot library path — live
-// in one module per platform; the cfg selects exactly one. macOS / other Unix
-// have nothing to force, so they fall back to a tiny inline default.
+// in one file per platform; the cfg selects exactly one.
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod platform;
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
 mod platform;
-#[cfg(not(any(windows, target_os = "linux")))]
-mod platform {
-    #[cfg(target_os = "macos")]
-    pub const JVM_LIB_REL: &str = "lib/server/libjvm.dylib";
-    #[cfg(not(target_os = "macos"))]
-    pub const JVM_LIB_REL: &str = "lib/server/libjvm.so";
-    /// No discrete-GPU hint applies here (e.g. macOS unified GPU).
-    pub fn force_gpu() {}
-}
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod platform;
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+compile_error!("dgpuj supports only Windows, Linux, and macOS");
 
 fn main() -> ExitCode {
     match run() {

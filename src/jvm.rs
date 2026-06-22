@@ -22,19 +22,18 @@ use crate::platform;
 /// Resolve the JVM library path from an explicit dll, then a home dir, then
 /// `$JAVA_HOME` (joined with the platform's HotSpot-relative library path).
 pub fn resolve(dll: Option<PathBuf>, home: Option<PathBuf>) -> Result<PathBuf, String> {
-    if let Some(p) = dll {
-        return p
-            .is_file()
-            .then_some(p.clone())
-            .ok_or_else(|| format!("jvm library not found: {}", p.display()));
+    let path = match dll {
+        Some(p) => p,
+        None => home
+            .or_else(|| env::var_os("JAVA_HOME").map(PathBuf::from))
+            .ok_or("no JVM location: pass --dgpuj-home / --dgpuj-jvm or set JAVA_HOME")?
+            .join(platform::JVM_LIB_REL),
+    };
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(format!("jvm library not found: {}", path.display()))
     }
-    let home = home
-        .or_else(|| env::var_os("JAVA_HOME").map(PathBuf::from))
-        .ok_or("no JVM location: pass --dgpuj-home / --dgpuj-jvm or set JAVA_HOME")?;
-    let p = home.join(platform::JVM_LIB_REL);
-    p.is_file()
-        .then_some(p.clone())
-        .ok_or_else(|| format!("jvm library not found: {}", p.display()))
 }
 
 /// Signature of `JNI_CreateJavaVM` exported by the JVM library.
@@ -73,6 +72,10 @@ pub fn launch(
         ignoreUnrecognized: JNI_FALSE,
     };
 
+    // SAFETY: `create` is the genuine `JNI_CreateJavaVM` resolved from the loaded
+    // library; `init_args` and the option strings it points at outlive the call;
+    // `vm`/`env_ptr` stay valid while `lib` is loaded, which we hold until after
+    // `DestroyJavaVM` returns below.
     unsafe {
         let lib = libloading::Library::new(jvm_path)
             .map_err(|e| format!("loading {}: {e}", jvm_path.display()))?;
@@ -85,14 +88,14 @@ pub fn launch(
         let rc = create(
             &mut vm,
             &mut env_ptr,
-            &mut init_args as *mut JavaVMInitArgs as *mut c_void,
+            std::ptr::from_mut(&mut init_args).cast(),
         );
         if rc != JNI_OK {
             return Err(format!("JNI_CreateJavaVM failed (code {rc})"));
         }
 
         // The calling thread is now attached; wrap its env for ergonomic calls.
-        let mut env = JNIEnv::from_raw(env_ptr as *mut SysJNIEnv)
+        let mut env = JNIEnv::from_raw(env_ptr.cast::<SysJNIEnv>())
             .map_err(|e| format!("wrapping JNIEnv: {e}"))?;
 
         let result = invoke_main(&mut env, main_class, prog_args);
@@ -137,19 +140,26 @@ fn invoke_main(env: &mut JNIEnv, main_class: &str, prog_args: &[String]) -> Resu
     .map_err(|e| explain(env, "calling main(String[])".into(), e))?;
 
     // A pending exception turns into a non-zero exit, after printing the trace.
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_describe();
-        let _ = env.exception_clear();
+    if drain_exception(env) {
         return Ok(1);
     }
     Ok(0)
 }
 
-/// Attach a pending Java stack trace (if any) to an error message.
-fn explain(env: &mut JNIEnv, ctx: String, e: jni::errors::Error) -> String {
+/// Print and clear a pending Java exception (if any), reporting whether one was
+/// present. JNI leaves a thrown exception pending until explicitly cleared.
+fn drain_exception(env: &mut JNIEnv) -> bool {
     if env.exception_check().unwrap_or(false) {
         let _ = env.exception_describe();
         let _ = env.exception_clear();
+        true
+    } else {
+        false
     }
+}
+
+/// Attach a pending Java stack trace (if any) to an error message.
+fn explain(env: &mut JNIEnv, ctx: String, e: jni::errors::Error) -> String {
+    drain_exception(env);
     format!("{ctx}: {e}")
 }

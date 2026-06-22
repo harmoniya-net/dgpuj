@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 
 /// A fully-parsed launch request.
+#[derive(Debug)]
 pub struct Invocation {
     /// Explicit path to the JVM shared library (`--dgpuj-jvm`).
     pub jvm_dll: Option<PathBuf>,
