@@ -1,14 +1,14 @@
 [package]
-name = "dgpu-jvm"
+name = "dgpuj"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "In-process JVM launcher that forces the discrete GPU (NVIDIA Optimus / AMD PowerXpress) on Windows hybrid-graphics systems."
-repository = "https://github.com/harmoniya-net/dgpu-jvm"
+repository = "https://github.com/harmoniya-net/dgpuj"
 readme = "README.md"
 
 [[bin]]
-name = "dgpu-jvm"
+name = "dgpuj"
 path = "src/main.rs"
 
 [dependencies]

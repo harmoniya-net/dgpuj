@@ -1,4 +1,4 @@
-# dgpu-jvm
+# dgpuj
 
 A tiny launcher that forces the **discrete GPU** on Windows hybrid-graphics
 laptops (NVIDIA Optimus / AMD PowerXpress), then runs the JVM **in-process** so
@@ -23,7 +23,7 @@ Oracle, Microsoft, …) is the same generic launcher with no export, which is wh
 vanilla Minecraft lands on the iGPU unless you set an NVIDIA Control Panel
 profile or a Windows `UserGpuPreferences` entry by hand.
 
-`dgpu-jvm` solves it the only clean way: it **is** the executable that exports
+`dgpuj` solves it the only clean way: it **is** the executable that exports
 the symbols, and it hosts the JVM with `JNI_CreateJavaVM` so *this* process owns
 the GL context. No registry writes, no driver profiles, no per-version path
 fixups.
@@ -33,13 +33,13 @@ fixups.
 A near drop-in for `java`:
 
 ```
-dgpu-jvm [--dgpu-java-home DIR | --dgpu-jvm-dll PATH] \
-         [VM options...] <main.Class> [program args...]
+dgpuj [--dgpuj-home DIR | --dgpuj-jvm PATH] \
+      [VM options...] <main.Class> [program args...]
 ```
 
-- The JVM library is located from `--dgpu-jvm-dll`, then `--dgpu-java-home`,
-  then `$JAVA_HOME` (expects `<home>\bin\server\jvm.dll`).
-- Everything after the optional `--dgpu-*` flags is parsed like the `java`
+- The JVM library is located from `--dgpuj-jvm`, then `--dgpuj-home`, then
+  `$JAVA_HOME` (expects `<home>\bin\server\jvm.dll`).
+- Everything after the optional `--dgpuj-*` flags is parsed like the `java`
   launcher: `-…` tokens are JVM options, the first bare token is the main class,
   the rest go to `main(String[])`.
 - `-cp` / `-classpath` / `--class-path` are translated to
@@ -49,7 +49,7 @@ Example:
 
 ```
 set JAVA_HOME=C:\jdk-17
-dgpu-jvm -Xmx4G -cp lib\* net.minecraft.client.main.Main --username Dev
+dgpuj -Xmx4G -cp lib\* net.minecraft.client.main.Main --username Dev
 ```
 
 **Not supported:** `-jar`, `@argfiles`, module-path launches with a manifest
@@ -64,12 +64,12 @@ cargo build --release --target x86_64-pc-windows-msvc
 ```
 
 Prebuilt x64 and arm64 binaries are attached to each
-[GitHub release](https://github.com/harmoniya-net/dgpu-jvm/releases).
+[GitHub release](https://github.com/harmoniya-net/dgpuj/releases).
 
 ## How it's wired into opys
 
 [opys](https://github.com/harmoniya-net/opys) can adopt this as a Windows-only
-`command` override: ship the released `dgpu-jvm.exe` as an artifact, point
+`command` override: ship the released `dgpuj.exe` as an artifact, point
 `command` at it (rule-tagged to Windows), set `JAVA_HOME`, and forward the same
 args `java` would get. On Linux, prefer the PRIME env vars
 (`__NV_PRIME_RENDER_OFFLOAD=1`, `__GLX_VENDOR_LIBRARY_NAME=nvidia`) instead.

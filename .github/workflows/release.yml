@@ -29,10 +29,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/dgpu-jvm.exe" "dist/dgpu-jvm-${{ matrix.target }}.exe"
+          cp "target/${{ matrix.target }}/release/dgpuj.exe" "dist/dgpuj-${{ matrix.target }}.exe"
       - uses: actions/upload-artifact@v4
         with:
-          name: dgpu-jvm-${{ matrix.target }}
+          name: dgpuj-${{ matrix.target }}
           path: dist/*.exe
           if-no-files-found: error
 

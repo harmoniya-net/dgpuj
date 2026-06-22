@@ -1,4 +1,4 @@
-//! dgpu-jvm — force the discrete GPU on Windows hybrid-graphics systems, then
+//! dgpuj — force the discrete GPU on Windows hybrid-graphics systems, then
 //! run the JVM *in this process* so the choice actually applies.
 //!
 //! Why in-process (and not a wrapper that spawns `javaw.exe`): the NVIDIA
@@ -12,17 +12,17 @@
 //!
 //! CLI contract — a near drop-in for `java`:
 //!
-//!   dgpu-jvm [--dgpu-java-home DIR | --dgpu-jvm-dll PATH] \
-//!            [VM options...] <main.Class> [program args...]
+//!   dgpuj [--dgpuj-home DIR | --dgpuj-jvm PATH] \
+//!         [VM options...] <main.Class> [program args...]
 //!
-//! Everything after the optional `--dgpu-*` flags is parsed exactly like the
+//! Everything after the optional `--dgpuj-*` flags is parsed exactly like the
 //! `java` launcher: tokens starting with `-` are JVM options (with `-cp` /
 //! `-classpath` / `--class-path` translated to `-Djava.class.path=`, since
 //! `JNI_CreateJavaVM` only understands the latter), the first bare token is the
 //! main class, and the rest are passed to `main(String[])`.
 //!
-//! The JVM library is located from `--dgpu-jvm-dll`, then `--dgpu-java-home`,
-//! then `$JAVA_HOME`. `-jar` and `@argfiles` are intentionally unsupported.
+//! The JVM library is located from `--dgpuj-jvm`, then `--dgpuj-home`, then
+//! `$JAVA_HOME`. `-jar` and `@argfiles` are intentionally unsupported.
 
 #![allow(non_upper_case_globals)]
 
@@ -59,7 +59,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
         Err(e) => {
-            eprintln!("dgpu-jvm: {e}");
+            eprintln!("dgpuj: {e}");
             ExitCode::FAILURE
         }
     }
@@ -73,17 +73,13 @@ fn run() -> Result<i32, String> {
     let mut java_home: Option<PathBuf> = None;
     while let Some(a) = args.peek() {
         match a.as_str() {
-            "--dgpu-jvm-dll" => {
+            "--dgpuj-jvm" => {
                 args.next();
-                jvm_dll = Some(args.next().ok_or("--dgpu-jvm-dll needs a path")?.into());
+                jvm_dll = Some(args.next().ok_or("--dgpuj-jvm needs a path")?.into());
             }
-            "--dgpu-java-home" => {
+            "--dgpuj-home" => {
                 args.next();
-                java_home = Some(
-                    args.next()
-                        .ok_or("--dgpu-java-home needs a directory")?
-                        .into(),
-                );
+                java_home = Some(args.next().ok_or("--dgpuj-home needs a directory")?.into());
             }
             _ => break,
         }
@@ -123,7 +119,7 @@ fn resolve_jvm(dll: Option<PathBuf>, home: Option<PathBuf>) -> Result<PathBuf, S
     }
     let home = home
         .or_else(|| env::var_os("JAVA_HOME").map(PathBuf::from))
-        .ok_or("no JVM location: pass --dgpu-java-home / --dgpu-jvm-dll or set JAVA_HOME")?;
+        .ok_or("no JVM location: pass --dgpuj-home / --dgpuj-jvm or set JAVA_HOME")?;
     let p = home.join(JVM_LIB_REL);
     p.is_file()
         .then_some(p.clone())
