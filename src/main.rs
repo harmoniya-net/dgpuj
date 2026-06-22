@@ -1,14 +1,23 @@
-//! dgpuj — force the discrete GPU on Windows hybrid-graphics systems, then
-//! run the JVM *in this process* so the choice actually applies.
+//! dgpuj — force the discrete GPU on hybrid-graphics systems, then run the JVM
+//! *in this process* so the choice actually applies.
 //!
-//! Why in-process (and not a wrapper that spawns `javaw.exe`): the NVIDIA
-//! Optimus / AMD PowerXpress driver reads the `NvOptimusEnablement` /
-//! `AmdPowerXpressRequestHighPerformance` export from the main module of the
-//! process that creates the GL/D3D context — and the decision is per-process,
-//! with no inheritance to children. A launcher that *spawns* `javaw.exe` is
-//! useless: the child's main module is `javaw.exe`, which carries no export.
-//! So we export the symbols from THIS executable and load `jvm.dll` into it via
-//! `JNI_CreateJavaVM`, making this process the one that owns the GL context.
+//! Why in-process (and not a wrapper that spawns `java`/`javaw`): GPU selection
+//! is decided per-process at GL/D3D context-creation time, for the process that
+//! creates the context, with no inheritance to children. A launcher that just
+//! *spawns* the JVM is useless — the child is a different process with its own
+//! environment/exe. So dgpuj applies the per-OS GPU hint to ITSELF and loads the
+//! JVM via `JNI_CreateJavaVM`, making this the process that owns the context.
+//!
+//! Per-OS forcing (each is safe-by-default — a no-op on non-hybrid machines):
+//! - Windows: export `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`
+//!   from this exe; the driver reads them from the export table (see build.rs).
+//! - Linux: set the NVIDIA PRIME render-offload env vars before launch, but only
+//!   when the proprietary NVIDIA driver is present (`/proc/driver/nvidia`) and
+//!   the vars aren't already set — `__GLX_VENDOR_LIBRARY_NAME=nvidia` on a
+//!   non-NVIDIA box would break GL.
+//! - macOS: nothing to force (Apple Silicon has one GPU; the legacy Intel lever
+//!   was an `.app` `Info.plist` key, out of reach of a bare binary). Runs as a
+//!   plain in-process launcher — pass `-XstartOnFirstThread` for LWJGL/GLFW.
 //!
 //! CLI contract — a near drop-in for `java`:
 //!
@@ -22,9 +31,8 @@
 //! main class, and the rest are passed to `main(String[])`.
 //!
 //! The JVM library is located from `--dgpuj-jvm`, then `--dgpuj-home`, then
-//! `$JAVA_HOME`. `-jar` and `@argfiles` are intentionally unsupported.
-
-#![allow(non_upper_case_globals)]
+//! `$JAVA_HOME` — under `bin\server\jvm.dll` (Windows), `lib/server/libjvm.so`
+//! (Linux), or `lib/server/libjvm.dylib` (macOS). `-jar`/`@argfiles` unsupported.
 
 use std::env;
 use std::ffi::{c_void, CString};
@@ -38,22 +46,24 @@ use jni::sys::{
 };
 use jni::JNIEnv;
 
-// ── GPU-selection exports ───────────────────────────────────────────────────
-// Value 0x1 == "use High Performance Graphics". The driver reads the DWORD via
-// this executable's export table; build.rs forces them into that table.
-#[used]
-#[no_mangle]
-pub static NvOptimusEnablement: u32 = 0x0000_0001;
-#[used]
-#[no_mangle]
-pub static AmdPowerXpressRequestHighPerformance: u32 = 0x0000_0001;
-
-// HotSpot ships `jvm.dll` under `<home>/bin/server/` on Windows. The Unix
-// layout is only here so the crate type-checks on non-Windows hosts (CI/dev).
+// Per-OS specifics — the discrete-GPU hint plus the HotSpot library path — live
+// in one module per platform; the cfg selects exactly one. macOS / other Unix
+// have nothing to force, so they fall back to a tiny inline default.
 #[cfg(windows)]
-const JVM_LIB_REL: &str = r"bin\server\jvm.dll";
-#[cfg(not(windows))]
-const JVM_LIB_REL: &str = "lib/server/libjvm.so";
+#[path = "windows.rs"]
+mod platform;
+#[cfg(target_os = "linux")]
+#[path = "linux.rs"]
+mod platform;
+#[cfg(not(any(windows, target_os = "linux")))]
+mod platform {
+    #[cfg(target_os = "macos")]
+    pub const JVM_LIB_REL: &str = "lib/server/libjvm.dylib";
+    #[cfg(not(target_os = "macos"))]
+    pub const JVM_LIB_REL: &str = "lib/server/libjvm.so";
+    /// No discrete-GPU hint applies here (e.g. macOS unified GPU).
+    pub fn force_gpu() {}
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -66,6 +76,10 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<i32, String> {
+    // Apply the platform's discrete-GPU hint before the JVM (and its GL stack)
+    // initialise. On Windows the link-time exports already did the work.
+    platform::force_gpu();
+
     let mut args = env::args().skip(1).peekable();
 
     // 1. Consume wrapper-specific leading flags.
@@ -120,7 +134,7 @@ fn resolve_jvm(dll: Option<PathBuf>, home: Option<PathBuf>) -> Result<PathBuf, S
     let home = home
         .or_else(|| env::var_os("JAVA_HOME").map(PathBuf::from))
         .ok_or("no JVM location: pass --dgpuj-home / --dgpuj-jvm or set JAVA_HOME")?;
-    let p = home.join(JVM_LIB_REL);
+    let p = home.join(platform::JVM_LIB_REL);
     p.is_file()
         .then_some(p.clone())
         .ok_or_else(|| format!("jvm library not found: {}", p.display()))

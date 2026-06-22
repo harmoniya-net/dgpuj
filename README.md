@@ -1,32 +1,26 @@
 # dgpuj
 
-A tiny launcher that forces the **discrete GPU** on Windows hybrid-graphics
-laptops (NVIDIA Optimus / AMD PowerXpress), then runs the JVM **in-process** so
-the choice actually applies to your Java app (e.g. Minecraft).
+A tiny `java`-style launcher that forces the **discrete GPU** on hybrid-graphics
+machines, then runs the JVM **in-process** so the choice actually applies to
+your Java app (e.g. Minecraft). One binary, one CLI, on Windows / Linux / macOS.
 
 ## Why this exists
 
-On a hybrid laptop, Java apps default to the **integrated** GPU. The known fix
-is to export the magic data symbol `NvOptimusEnablement = 1` (or
-`AmdPowerXpressRequestHighPerformance = 1`) from the executable — but two facts
-make that hard for Java:
+On a hybrid laptop, Java apps default to the **integrated** GPU. The universal
+catch is that GPU selection is decided **per-process, for the process that
+creates the GL/D3D context, with no inheritance to children** — so a wrapper
+that merely *spawns* `java`/`javaw` is useless (the child is a different
+process). `dgpuj` instead applies the per-OS GPU hint to **itself** and hosts
+the JVM via `JNI_CreateJavaVM`, so the process that owns the GL context is the
+one carrying the hint.
 
-1. **The symbol must live in the `.exe`, not a DLL.** So it can't go in
-   `jvm.dll`, in LWJGL, or in any library the JVM loads.
-2. **The driver checks the process that creates the GL/D3D context, per
-   process, with no inheritance.** So a wrapper that *spawns* `javaw.exe` as a
-   child does nothing — the child's main module is `javaw.exe`, which has no
-   export.
+Each platform's hint is **safe-by-default** — a no-op on non-hybrid machines:
 
-Stock `java.exe` / `javaw.exe` from every vendor (Temurin, Zulu, Corretto,
-Oracle, Microsoft, …) is the same generic launcher with no export, which is why
-vanilla Minecraft lands on the iGPU unless you set an NVIDIA Control Panel
-profile or a Windows `UserGpuPreferences` entry by hand.
-
-`dgpuj` solves it the only clean way: it **is** the executable that exports
-the symbols, and it hosts the JVM with `JNI_CreateJavaVM` so *this* process owns
-the GL context. No registry writes, no driver profiles, no per-version path
-fixups.
+| OS | Mechanism | Notes |
+|----|-----------|-------|
+| **Windows** | Exports `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance` from the `.exe` | Must be the exe, not a DLL — so stock `java.exe`/`javaw.exe` (every vendor) can't carry it. Inert without a hybrid GPU. |
+| **Linux** | Sets NVIDIA PRIME render-offload env vars before launch | Only when the proprietary NVIDIA driver is present (`/proc/driver/nvidia`), and never clobbering vars you already set. |
+| **macOS** | *(nothing to force)* | Apple Silicon has one GPU; the legacy Intel lever was an `.app` `Info.plist` key, unreachable from a bare binary. Runs as a plain in-process launcher. |
 
 ## Usage
 
@@ -38,12 +32,15 @@ dgpuj [--dgpuj-home DIR | --dgpuj-jvm PATH] \
 ```
 
 - The JVM library is located from `--dgpuj-jvm`, then `--dgpuj-home`, then
-  `$JAVA_HOME` (expects `<home>\bin\server\jvm.dll`).
+  `$JAVA_HOME` — under `bin\server\jvm.dll` (Windows), `lib/server/libjvm.so`
+  (Linux), or `lib/server/libjvm.dylib` (macOS).
 - Everything after the optional `--dgpuj-*` flags is parsed like the `java`
   launcher: `-…` tokens are JVM options, the first bare token is the main class,
   the rest go to `main(String[])`.
 - `-cp` / `-classpath` / `--class-path` are translated to
   `-Djava.class.path=` (the only form `JNI_CreateJavaVM` understands).
+- **macOS:** include `-XstartOnFirstThread` for any LWJGL3/GLFW app (as every
+  Minecraft-on-macOS launch already does).
 
 Example:
 
@@ -57,22 +54,23 @@ main class. Pass an explicit main class + classpath.
 
 ## Build
 
-Windows MSVC toolchain only (the GPU exports use MSVC `/EXPORT:` linker syntax):
-
 ```
-cargo build --release --target x86_64-pc-windows-msvc
+cargo build --release
 ```
 
-Prebuilt x64 and arm64 binaries are attached to each
+Windows uses the MSVC toolchain (the GPU exports use MSVC `/EXPORT:` linker
+syntax). Prebuilt binaries for Windows (x64/arm64), Linux (x64), and macOS
+(arm64/x64) are attached to each
 [GitHub release](https://github.com/harmoniya-net/dgpuj/releases).
 
 ## How it's wired into opys
 
-[opys](https://github.com/harmoniya-net/opys) can adopt this as a Windows-only
-`command` override: ship the released `dgpuj.exe` as an artifact, point
-`command` at it (rule-tagged to Windows), set `JAVA_HOME`, and forward the same
-args `java` would get. On Linux, prefer the PRIME env vars
-(`__NV_PRIME_RENDER_OFFLOAD=1`, `__GLX_VENDOR_LIBRARY_NAME=nvidia`) instead.
+[opys](https://github.com/harmoniya-net/opys) can use the **same** `command`
+across platforms: ship the released `dgpuj` binary as an artifact, point
+`command` at it, set `JAVA_HOME`, and forward the same args `java` would get.
+dgpuj then does the right per-OS thing internally — so opys needs no per-OS
+branching in the manifest. (Equivalently, on Linux opys could still set the
+PRIME env vars natively via `envs`; on macOS no GPU hint is needed at all.)
 
 ## License
 

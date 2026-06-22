@@ -9,17 +9,20 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
-    # arm64 cross-link may be unavailable on the runner; never block the x64 release on it.
-    continue-on-error: ${{ matrix.target == 'aarch64-pc-windows-msvc' }}
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,   ext: .exe }
+          - { os: windows-latest, target: aarch64-pc-windows-msvc,  ext: .exe, experimental: true }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, ext: '' }
+          - { os: macos-latest,   target: aarch64-apple-darwin,     ext: '' }
+          - { os: macos-latest,   target: x86_64-apple-darwin,      ext: '' }
+    # arm64-windows cross-link may be unavailable on the runner; never block the release on it.
+    continue-on-error: ${{ matrix.experimental == true }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -29,24 +32,24 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/dgpuj.exe" "dist/dgpuj-${{ matrix.target }}.exe"
-      - uses: actions/upload-artifact@v4
+          cp "target/${{ matrix.target }}/release/dgpuj${{ matrix.ext }}" "dist/dgpuj-${{ matrix.target }}${{ matrix.ext }}"
+      - uses: actions/upload-artifact@v5
         with:
           name: dgpuj-${{ matrix.target }}
-          path: dist/*.exe
+          path: dist/dgpuj-*
           if-no-files-found: error
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.exe
+          files: dist/dgpuj-*
           generate_release_notes: true
           fail_on_unmatched_files: true
