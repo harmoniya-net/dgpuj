@@ -14,11 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, target: x86_64-pc-windows-msvc,   ext: .exe }
-          - { os: windows-latest, target: aarch64-pc-windows-msvc,  ext: .exe, experimental: true }
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu, ext: '' }
-          - { os: macos-latest,   target: aarch64-apple-darwin,     ext: '' }
-          - { os: macos-latest,   target: x86_64-apple-darwin,      ext: '' }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: windows-latest, target: aarch64-pc-windows-msvc, experimental: true }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest,   target: aarch64-apple-darwin }
+          - { os: macos-latest,   target: x86_64-apple-darwin }
     # arm64-windows cross-link may be unavailable on the runner; never block the release on it.
     continue-on-error: ${{ matrix.experimental == true }}
     steps:
@@ -28,11 +28,20 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Stage binary
+      # Package the binary into an archive so extraction restores the +x bit on
+      # Unix (consumers like @opys/dgpuj extract a single file). .zip on Windows
+      # (Compress/7z), .tar.gz elsewhere; the binary sits at the archive root.
+      - name: Package archive
         shell: bash
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/dgpuj${{ matrix.ext }}" "dist/dgpuj-${{ matrix.target }}${{ matrix.ext }}"
+          out="$PWD/dist/dgpuj-${{ matrix.target }}"
+          cd "target/${{ matrix.target }}/release"
+          if [ -f dgpuj.exe ]; then
+            7z a "$out.zip" dgpuj.exe >/dev/null
+          else
+            tar -czf "$out.tar.gz" dgpuj
+          fi
       - uses: actions/upload-artifact@v5
         with:
           name: dgpuj-${{ matrix.target }}

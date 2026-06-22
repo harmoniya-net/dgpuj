@@ -59,9 +59,11 @@ cargo build --release
 ```
 
 Windows uses the MSVC toolchain (the GPU exports use MSVC `/EXPORT:` linker
-syntax). Prebuilt binaries for Windows (x64/arm64), Linux (x64), and macOS
+syntax). Prebuilt archives for Windows (x64/arm64), Linux (x64), and macOS
 (arm64/x64) are attached to each
-[GitHub release](https://github.com/harmoniya-net/dgpuj/releases).
+[GitHub release](https://github.com/harmoniya-net/dgpuj/releases) — `.zip` on
+Windows, `.tar.gz` elsewhere, with the `dgpuj`/`dgpuj.exe` binary at the archive
+root (the tarball preserves the executable bit).
 
 ## How it's wired into opys
 
