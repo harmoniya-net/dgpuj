@@ -1,0 +1,26 @@
+[package]
+name = "dgpu-jvm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "In-process JVM launcher that forces the discrete GPU (NVIDIA Optimus / AMD PowerXpress) on Windows hybrid-graphics systems."
+repository = "https://github.com/harmoniya-net/dgpu-jvm"
+readme = "README.md"
+
+[[bin]]
+name = "dgpu-jvm"
+path = "src/main.rs"
+
+[dependencies]
+# Ergonomic JNI types. We do NOT enable the `invocation` feature: that would
+# link `jvm.dll` at build time. Instead we dlopen it at runtime (libloading)
+# so the JVM path is chosen at launch, and wrap the resulting env pointer.
+jni = "0.21"
+libloading = "0.8"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
