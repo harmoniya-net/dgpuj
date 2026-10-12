@@ -15,7 +15,7 @@ llvm-dlltool -m i386:x86-64 -d kernel32.def -l kernel32.lib
 
 # What a PE has to begin with, and no program for DOS after it.
 printf 'MZ' > stub.bin
-head -c 62 -dev/zero >> stub.bin
+head -c 62 /dev/zero >> stub.bin
 
 clang --target=x86_64-pc-windows-msvc -Oz -ffreestanding -fno-stack-protector \
     -mno-stack-arg-probe -Wall -Wextra -Werror -c dgpuj.c -o dgpuj.obj
