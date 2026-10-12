@@ -80,8 +80,9 @@ What it gave up for the size is being told what went wrong: with no Java where
 ## Build and test
 
 ```
-sh build.sh [target]     # ./dgpuj or ./dgpuj.exe; the target defaults to this machine
-sh test.sh               # launches $JAVA_HOME through it, every way the tests know
+make                    # ./dgpuj or ./dgpuj.exe, for this machine
+make TARGET=<triple>    # for another, named as the release archives are
+make test               # launches $JAVA_HOME through it, every way the tests know
 ```
 
 A Windows target builds anywhere there is clang, lld-link and llvm-dlltool, and

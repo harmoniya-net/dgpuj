@@ -15,7 +15,7 @@
  * the executable. Elsewhere the hint is environment or there is none, so
  * dgpuj sets it and runs the rest of the line.
  *
- * Built by ./build.sh.
+ * Built by `make`.
  */
 
 #ifdef _WIN32
