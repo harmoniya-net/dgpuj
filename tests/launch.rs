@@ -90,6 +90,12 @@ struct Fixture {
     probe_jar: PathBuf,
 }
 
+/// Whether the dgpuj under test is `tiny/dgpuj.c`, which takes `<java>` as its
+/// first word where the others take `--dgpuj-home`.
+fn tiny() -> bool {
+    env::var_os("DGPUJ_TEST_TINY").is_some()
+}
+
 fn hex(s: &str) -> String {
     s.chars()
         .map(|c| format!("{:x}", c as u32))
@@ -178,7 +184,15 @@ fn fixture() -> Option<&'static Fixture> {
 
 fn dgpuj(f: &Fixture) -> Command {
     let mut command = Command::new(&f.dgpuj);
-    if f.home_flag {
+    if tiny() {
+        // The build that fits in a packet is told which `java` to be, as its
+        // first word: a path, or the bare name where it is beside one.
+        if f.home_flag {
+            command.arg(tool(&f.java_home, "java"));
+        } else {
+            command.arg("java");
+        }
+    } else if f.home_flag {
         command.arg("--dgpuj-home").arg(&f.java_home);
     }
     // Not the JDK to fall back on: a launch finds it as the test says, or fails.
@@ -347,7 +361,7 @@ fn starts_on_the_first_thread_when_asked() {
 fn says_where_java_8_needs_it() {
     let Some(f) = fixture() else { return };
     // The build that fits in a packet has no room for the sentence.
-    if f.home_flag || env::var_os("DGPUJ_TEST_TINY").is_some() {
+    if f.home_flag || tiny() {
         return;
     }
     let out = Command::new(dgpuj_bin())
@@ -377,6 +391,9 @@ fn finds_the_jdk_it_is_installed_in() {
     }
     let mut command = Command::new(&copy);
     command.env_remove("JAVA_HOME");
+    if tiny() {
+        command.arg("java");
+    }
     command
         .arg("-cp")
         .arg(&f.classes)
@@ -384,6 +401,44 @@ fn finds_the_jdk_it_is_installed_in() {
     let out = stdout(command);
     fs::remove_file(&copy).unwrap();
     assert_eq!(out, hex("z"));
+}
+
+/// `dgpuj java …`: the bare word is the `java` on PATH, as it is to a shell.
+#[cfg(windows)]
+#[test]
+fn is_the_java_on_the_path_when_given_the_bare_word() {
+    let Some(f) = fixture() else { return };
+    // Java 8 has to have dgpuj beside it, and then PATH is not what finds it.
+    if !tiny() || !f.home_flag {
+        return;
+    }
+    let mut path = OsString::from(f.java_home.join("bin"));
+    path.push(";");
+    path.push(env::var_os("PATH").unwrap_or_default());
+    let mut command = Command::new(&f.dgpuj);
+    command
+        .env("PATH", path)
+        .arg("java")
+        .arg("-cp")
+        .arg(&f.classes);
+    command.args(["Probe", "prop", "java.home"]);
+    let home = f.java_home.to_str().unwrap();
+    assert_eq!(stdout(command).to_lowercase(), hex(home).to_lowercase());
+}
+
+/// A path written with the other slash, and with no `.exe`, is the same `java`.
+#[cfg(windows)]
+#[test]
+fn takes_a_path_to_java_however_it_is_written() {
+    let Some(f) = fixture() else { return };
+    if !tiny() || !f.home_flag {
+        return;
+    }
+    let java = format!("{}/bin/java", f.java_home.display()).replace('\\', "/");
+    let mut command = Command::new(&f.dgpuj);
+    command.arg(java).arg("-cp").arg(&f.classes);
+    command.args(["Probe", "echo", "w"]);
+    assert_eq!(stdout(command), hex("w"));
 }
 
 /// The two things the Windows binary is for and must not need: the symbols a
