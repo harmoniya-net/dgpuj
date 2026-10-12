@@ -9,7 +9,7 @@
  *   `JLI_MemAlloc` and an error is `JLI_ReportErrorMessage`.
  * - No parsing of arguments. `JLI_CmdToArgs` splits the command line, which is
  *   how `java.exe` gets its own `argv`; all that is read here is the one flag
- *   that says where `jli.dll` is.
+ *   that says where `jli.dll` is, and it is cut out again before that.
  * - No Unicode, the launcher reading the command line as ANSI anyway.
  * - No looking at files, and no asking where dgpuj itself is. Whether a JDK
  *   is there is whether its `jli.dll` loads; whether it is Java 8 is whether
@@ -64,26 +64,34 @@ void entry(void)
 {
     static const char java[] = "java";
     char bin[PATH + 16];
-    char *line = GetCommandLineA(), *c = line, *end = bin, stop, **argv;
+    char *line = GetCommandLineA(), *c = line, *end = bin, *flag_at, stop, **argv;
     const char *flag = "--dgpuj-home ";
     /* The JDK dgpuj is in the `bin` of, as `java.exe` is, if it is in one. */
     HANDLE jli = LoadLibraryExA("jli.dll", 0, BESIDE);
     StdArg *args;
-    int argc, skip = 0, i;
+    int argc, i;
 
     /* Past the program's own name, to what may be dgpuj's one flag. */
     stop = *c == '"' ? '"' : ' ';
     do c++; while (*c && *c != stop);
     if (*c) c++;
     while (*c == ' ') c++;
+    flag_at = c;
     while (*flag && *c == *flag) c++, flag++;
 
     if (!*flag) {
         /* --dgpuj-home DIR: `jli.dll` cannot be asked, being what it finds. */
-        skip = 2;
         while (*c == ' ') c++;
         stop = *c == '"' ? (c++, '"') : ' ';
         while (*c && *c != stop && end < bin + PATH) *end++ = *c++;
+        if (*c == '"') c++;
+
+        /* And cannot be shown it either. `jli.dll` splits the command line
+         * and keeps count of what it split, to tell `main`'s arguments from
+         * `java`'s; shown a flag it does not know, it takes DIR for the main
+         * class and its count for a longer list than it allocated. So the
+         * flag is cut out of the line before `jli.dll` reads it. */
+        put(flag_at, c);
         put(end, "\\bin\\jli.dll");
         jli = LoadLibraryExA(bin, 0, ITS_OWN);
 
@@ -96,15 +104,14 @@ void entry(void)
     if (!jli)
         ExitProcess(1);
 
-    /* `argv` as `java.exe` gets it: split by the JDK, less dgpuj's flag. */
+    /* `argv` as `java.exe` gets it: split by the JDK. */
     ((void (*)(char *))GetProcAddress(jli, "JLI_CmdToArgs"))(line);
-    argc = ((int (*)(void))GetProcAddress(jli, "JLI_GetStdArgc"))() - skip;
+    argc = ((int (*)(void))GetProcAddress(jli, "JLI_GetStdArgc"))();
     args = ((StdArg *(*)(void))GetProcAddress(jli, "JLI_GetStdArgs"))();
     argv = ((char **(*)(unsigned long long))GetProcAddress(jli, "JLI_MemAlloc"))(
         (argc + 1) * sizeof *argv);
-    argv[0] = args[0].arg;
-    for (i = 1; i < argc; i++)
-        argv[i] = args[i + skip].arg;
+    for (i = 0; i < argc; i++)
+        argv[i] = args[i].arg;
     argv[argc] = 0;
 
     /* The constants `java.exe` is built with: no arguments of its own,
