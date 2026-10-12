@@ -12,7 +12,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
-const DGPUJ: &str = env!("CARGO_BIN_EXE_dgpuj");
+/// The dgpuj under test: this crate's, or the one `DGPUJ_TEST_BIN` names, which
+/// is how the C build is held to the same launches.
+fn dgpuj_bin() -> PathBuf {
+    env::var_os("DGPUJ_TEST_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_dgpuj")))
+}
 
 const PROBE: &str = r#"
 import java.net.InetAddress;
@@ -149,10 +155,10 @@ fn build_fixture() -> Option<Fixture> {
     let beside_java = cfg!(windows) && !java_home.join("lib").join("modules").is_file();
     let dgpuj = if beside_java {
         let copy = java_home.join("bin").join("dgpuj-under-test.exe");
-        fs::copy(DGPUJ, &copy).unwrap();
+        fs::copy(dgpuj_bin(), &copy).unwrap();
         copy
     } else {
-        PathBuf::from(DGPUJ)
+        dgpuj_bin()
     };
 
     Some(Fixture {
@@ -333,7 +339,7 @@ fn says_where_java_8_needs_it() {
     if f.home_flag {
         return;
     }
-    let out = Command::new(DGPUJ)
+    let out = Command::new(dgpuj_bin())
         .arg("--dgpuj-home")
         .arg(&f.java_home)
         .arg("-version")
@@ -353,7 +359,7 @@ fn finds_the_jdk_it_is_installed_in() {
     let Some(f) = fixture() else { return };
     let name = format!("dgpuj-installed{}", env::consts::EXE_SUFFIX);
     let copy = f.java_home.join("bin").join(name);
-    if fs::copy(DGPUJ, &copy).is_err() {
+    if fs::copy(dgpuj_bin(), &copy).is_err() {
         // A JDK that is the system's, and not ours to write into.
         assert!(env::var_os("CI").is_none(), "cannot write into the JDK");
         return;
@@ -374,7 +380,7 @@ fn finds_the_jdk_it_is_installed_in() {
 #[cfg(windows)]
 #[test]
 fn exports_the_gpu_symbols_and_carries_its_runtime() {
-    let exe = fs::read(DGPUJ).unwrap();
+    let exe = fs::read(dgpuj_bin()).unwrap();
     let has = |needle: &str| {
         let needle = needle.to_ascii_lowercase();
         exe.windows(needle.len())
