@@ -68,7 +68,9 @@ public class Tests {
 
     public static void main(String[] args) throws Exception {
         File built = new File(args[1]).getAbsoluteFile();
-        setUp(new File(args[0]).getAbsoluteFile(), built);
+        // A shell on Windows will say `dgpuj` is there when `dgpuj.exe` is.
+        String binary = WINDOWS && !args[0].endsWith(".exe") ? args[0] + ".exe" : args[0];
+        setUp(new File(binary).getCanonicalFile(), built);
 
         test("hands main its arguments", true, () -> {
             String out = probe(none(), "echo", "two words", E_ACUTE, "--flag").stdout();

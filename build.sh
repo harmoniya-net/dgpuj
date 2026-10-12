@@ -24,10 +24,18 @@ target=${1:-$(host)}
 case "$target" in
 *-pc-windows-msvc)
     case "$target" in
-        # At a fixed address, so that there is no relocation table to carry.
-        x86_64-*) machine=i386:x86-64 fixed="-fixed -dynamicbase:no" ;;
-        # Which Windows on ARM does not allow: an image there can always move.
-        aarch64-*) machine=arm64 fixed= ;;
+        # One section, aligned to nothing, at a fixed address so that there
+        # is no relocation table to carry: what gets it into a packet.
+        x86_64-*)
+            machine=i386:x86-64
+            layout="-align:4 -filealign:4 -fixed -dynamicbase:no -ignore:4108
+                -merge:.rdata=.text -merge:.data=.text -merge:.pdata=.text
+                -section:.text,erw"
+            ;;
+        # Windows on ARM takes none of that: an image there can always move,
+        # and one laid out like this it will not load. So an ordinary layout,
+        # which comes to a few kilobytes.
+        aarch64-*) machine=arm64 layout= ;;
         *) echo "no such Windows: $target" >&2; exit 1 ;;
     esac
 
@@ -46,12 +54,10 @@ case "$target" in
     clang --target="$target" -Oz -ffreestanding -fno-stack-protector \
         -mno-stack-arg-probe -Wall -Wextra -Werror -c dgpuj.c -o dgpuj.obj
 
-    # One section, aligned to nothing. Options with a dash, not a slash, which
-    # a Windows shell would take for paths and rewrite.
+    # Options with a dash, not a slash, which a Windows shell would take for
+    # paths and rewrite.
     lld-link -nologo -out:dgpuj.exe -entry:entry -subsystem:console -nodefaultlib \
-        -align:4 -filealign:4 $fixed \
-        -merge:.rdata=.text -merge:.data=.text -merge:.pdata=.text \
-        -section:.text,erw -ignore:4108 -stub:stub.bin -noimplib \
+        -stub:stub.bin -noimplib $layout \
         dgpuj.obj kernel32.lib
     rm -f kernel32.def kernel32.lib dgpuj.obj stub.bin
     echo "dgpuj.exe: $(wc -c < dgpuj.exe | tr -d ' ') bytes"
