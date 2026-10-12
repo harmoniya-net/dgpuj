@@ -1,47 +1,42 @@
-//! dgpuj — force the discrete GPU on hybrid-graphics systems, then run the JVM
-//! *in this process* so the choice actually applies.
+//! dgpuj — `java`, on the machine's better graphics card.
 //!
-//! Why in-process (and not a wrapper that spawns `java`/`javaw`): GPU selection
-//! is decided per-process at GL/D3D context-creation time, for the process that
-//! creates the context, with no inheritance to children. A launcher that just
-//! *spawns* the JVM is useless — the child is a different process with its own
-//! environment/exe. So dgpuj applies the per-OS GPU hint to ITSELF and loads the
-//! JVM via `JNI_CreateJavaVM`, making this the process that owns the context.
+//! Which GPU a program gets is decided for the process that creates the GL or
+//! D3D context, and on Windows by looking at that process's executable. So a
+//! wrapper that starts `java.exe` changes nothing there: the game is drawn by
+//! `java.exe`, which carries no hint. dgpuj is `java.exe` with the hint.
 //!
-//! Per-OS forcing (each is safe-by-default — a no-op on non-hybrid machines):
+//! That is nearly all it is. `java.exe` itself is one call, `JLI_Launch`, into
+//! the JDK's `jli.dll`, which reads the arguments, loads the VM and runs
+//! `main`. dgpuj makes the same call into the same library, so what a launch
+//! line means is the JDK's to say and not ours.
+//!
 //! - Windows: export `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`
-//!   from this exe; the driver reads them from the export table (see build.rs).
-//! - Linux: set the NVIDIA PRIME render-offload env vars before launch, but only
-//!   when the proprietary NVIDIA driver is present (`/proc/driver/nvidia`) and
-//!   the vars aren't already set — `__GLX_VENDOR_LIBRARY_NAME=nvidia` on a
-//!   non-NVIDIA box would break GL.
-//! - macOS: nothing to force (Apple Silicon has one GPU; the legacy Intel lever
-//!   was an `.app` `Info.plist` key, out of reach of a bare binary). Runs as a
-//!   plain in-process launcher, with `main` on the first thread as LWJGL/GLFW
-//!   need; `-XstartOnFirstThread` is accepted and dropped.
+//!   from this exe (see build.rs), then `JLI_Launch`.
+//! - Linux: the hint is environment, which a child keeps. Set the NVIDIA PRIME
+//!   render-offload variables, where that driver is loaded and they are not
+//!   already set, and `exec` the JDK's own `java`.
+//! - macOS: nothing to force (Apple Silicon has one GPU; the Intel lever was an
+//!   `.app`'s `Info.plist`). `exec` the JDK's own `java`.
 //!
-//! CLI contract — a near drop-in for `java`:
+//! dgpuj hosted the VM itself once, through `JNI_CreateJavaVM`, and so had to
+//! do again everything `java` does around it: the DLL search path, the options'
+//! encoding, a thread for `main`, the module options, `-XstartOnFirstThread`.
+//! Each was a launch that worked under `java` and not under dgpuj until it was
+//! found.
 //!
-//!   dgpuj [--dgpuj-home DIR | --dgpuj-jvm PATH] \
-//!         [VM options...] <main.Class> [program args...]
+//!   dgpuj [--dgpuj-home DIR] <whatever java takes>
 //!
-//! Everything after the optional `--dgpuj-*` flags is parsed exactly like the
-//! `java` launcher: tokens starting with `-` are JVM options (with `-cp` /
-//! `-classpath` / `--class-path` translated to `-Djava.class.path=`, since
-//! `JNI_CreateJavaVM` only understands the latter), the first bare token is the
-//! main class, and the rest are passed to `main(String[])`.
-//!
-//! The JVM library is located from `--dgpuj-jvm`, then `--dgpuj-home`, then
-//! `$JAVA_HOME` — under `bin\server\jvm.dll` (Windows), `lib/server/libjvm.so`
-//! (Linux), or `lib/server/libjvm.dylib` (macOS). `-jar`/`@argfiles` unsupported.
+//! The JDK is `--dgpuj-home`, else the one dgpuj is installed in the `bin` of,
+//! else `$JAVA_HOME`.
 
+use std::env;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod cli;
-mod jvm;
 
-// Per-OS specifics — the discrete-GPU hint plus the HotSpot library path — live
-// in one file per platform; the cfg selects exactly one.
+// Per-OS specifics — the discrete-GPU hint and how `java` is become — live in
+// one file per platform; the cfg selects exactly one.
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod platform;
@@ -54,6 +49,9 @@ mod platform;
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 compile_error!("dgpuj supports only Windows, Linux, and macOS");
 
+#[cfg(unix)]
+mod exec;
+
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
@@ -65,12 +63,24 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<i32, String> {
-    // Apply the platform's discrete-GPU hint before the JVM (and its GL stack)
-    // initialise. On Windows the link-time exports already did the work.
-    platform::force_gpu();
+    let inv = cli::parse(env::args_os().skip(1))?;
+    let home = inv
+        .java_home
+        .or_else(own_home)
+        .or_else(|| env::var_os("JAVA_HOME").map(PathBuf::from))
+        .ok_or("no JDK: pass --dgpuj-home or set JAVA_HOME")?;
+    platform::launch(&home, &inv.java_args)
+}
 
-    let inv = cli::parse(std::env::args().skip(1))?;
-    let jvm_path = jvm::resolve(inv.jvm_dll, inv.java_home)?;
-    platform::prepare_jvm(&jvm_path)?;
-    jvm::launch(&jvm_path, &inv.vm_opts, &inv.main_class, &inv.prog_args)
+/// The JDK dgpuj is installed in, if it sits in one's `bin` as `java` does.
+fn own_home() -> Option<PathBuf> {
+    let exe = env::current_exe().ok()?;
+    let home = exe.parent()?.parent()?;
+    java(home).is_file().then(|| home.to_path_buf())
+}
+
+/// A JDK's own launcher.
+fn java(home: &Path) -> PathBuf {
+    home.join("bin")
+        .join(format!("java{}", env::consts::EXE_SUFFIX))
 }

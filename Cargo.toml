@@ -1,22 +1,15 @@
 [package]
 name = "dgpuj"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 license = "MIT"
-description = "In-process JVM launcher that forces the discrete GPU (NVIDIA Optimus / AMD PowerXpress) on Windows hybrid-graphics systems."
+description = "java, on the discrete GPU of a hybrid-graphics machine (NVIDIA Optimus / AMD PowerXpress / PRIME)."
 repository = "https://github.com/harmoniya-net/dgpuj"
 readme = "README.md"
 
 [[bin]]
 name = "dgpuj"
 path = "src/main.rs"
-
-[dependencies]
-# Ergonomic JNI types. We do NOT enable the `invocation` feature: that would
-# link `jvm.dll` at build time. Instead we dlopen it at runtime (libloading)
-# so the JVM path is chosen at launch, and wrap the resulting env pointer.
-jni = "0.21"
-libloading = "0.8"
 
 [profile.release]
 opt-level = "z"

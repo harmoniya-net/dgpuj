@@ -1,5 +1,5 @@
 //! dgpuj against a real JDK: the launches a `java` would make, and the ones
-//! that went wrong under dgpuj and not under `java`.
+//! that went wrong while dgpuj hosted the VM itself and not under `java`.
 //!
 //! The JDK is `DGPUJ_TEST_JAVA_HOME`, or `JAVA_HOME`. Without one the tests
 //! pass having run nothing, except under CI, where that would be a check that
@@ -73,9 +73,15 @@ public class Agent {
 
 struct Fixture {
     java_home: PathBuf,
+    /// dgpuj, and how it is told of the JDK. Under Java 8 on Windows that is
+    /// by being in the JDK's `bin`, so it is a copy put there.
+    dgpuj: PathBuf,
+    home_flag: bool,
     /// `Probe.class`, in a directory with a letter outside ASCII in its name.
     classes: PathBuf,
     agent: PathBuf,
+    /// `Probe`, as a jar that names it as its main class, alone in a directory.
+    probe_jar: PathBuf,
 }
 
 fn hex(s: &str) -> String {
@@ -129,12 +135,33 @@ fn build_fixture() -> Option<Fixture> {
         &root,
         &["cfm", "agent.jar", "agent.mf", "Agent.class"],
     );
+    let jars = root.join("jars");
+    fs::create_dir_all(&jars).unwrap();
+    run_tool(
+        &java_home,
+        "jar",
+        &root,
+        &["cfe", "jars/probe.jar", "Probe", "Probe.class"],
+    );
     fs::rename(root.join("Probe.class"), classes.join("Probe.class")).unwrap();
 
+    // Java 8 finds itself from its launcher's place and from nothing else.
+    let beside_java = cfg!(windows) && !java_home.join("lib").join("modules").is_file();
+    let dgpuj = if beside_java {
+        let copy = java_home.join("bin").join("dgpuj-under-test.exe");
+        fs::copy(DGPUJ, &copy).unwrap();
+        copy
+    } else {
+        PathBuf::from(DGPUJ)
+    };
+
     Some(Fixture {
+        dgpuj,
+        home_flag: !beside_java,
         java_home,
         classes,
         agent: root.join("agent.jar"),
+        probe_jar: jars.join("probe.jar"),
     })
 }
 
@@ -144,8 +171,12 @@ fn fixture() -> Option<&'static Fixture> {
 }
 
 fn dgpuj(f: &Fixture) -> Command {
-    let mut command = Command::new(DGPUJ);
-    command.arg("--dgpuj-home").arg(&f.java_home);
+    let mut command = Command::new(&f.dgpuj);
+    if f.home_flag {
+        command.arg("--dgpuj-home").arg(&f.java_home);
+    }
+    // Not the JDK to fall back on: a launch finds it as the test says, or fails.
+    command.env_remove("JAVA_HOME");
     command
 }
 
@@ -258,9 +289,6 @@ fn resolves_a_name_under_an_agent_with_another_java_on_the_path() {
     assert_eq!(out, hex("ran"));
 }
 
-/// The first thread's stack is the executable's and cannot be asked for, so
-/// this holds only where the VM has a thread of its own.
-#[cfg(not(target_os = "macos"))]
 #[test]
 fn gives_main_the_stack_xss_asks_for() {
     let Some(f) = fixture() else { return };
@@ -271,16 +299,74 @@ fn gives_main_the_stack_xss_asks_for() {
     assert_eq!(stdout(probe(f, &[], &["thread"])), "main");
 }
 
-/// `java` takes `-XstartOnFirstThread` itself and the VM refuses it, so a
-/// launch line written for `java` stopped here. dgpuj is always on the first
-/// thread, and says so the way LWJGL checks for it.
+/// What `java` does that a VM hosted by hand did not: a jar's own main class,
+/// and a `*` in the class path.
+#[test]
+fn launches_a_jar_and_a_wildcard_class_path() {
+    let Some(f) = fixture() else { return };
+    let mut jar = dgpuj(f);
+    jar.arg("-jar").arg(&f.probe_jar).args(["echo", "x"]);
+    assert_eq!(stdout(jar), hex("x"));
+
+    let mut wildcard = dgpuj(f);
+    let jars = f.probe_jar.parent().unwrap().join("*");
+    wildcard.arg("-cp").arg(jars).args(["Probe", "echo", "y"]);
+    assert_eq!(stdout(wildcard), hex("y"));
+}
+
+/// A launch line written for `java` on macOS says `-XstartOnFirstThread`,
+/// which is the launcher's and which the VM refuses when handed it.
 #[cfg(target_os = "macos")]
 #[test]
-fn starts_on_the_first_thread_and_says_so() {
+fn starts_on_the_first_thread_when_asked() {
     let Some(f) = fixture() else { return };
     let out = stdout(probe(f, &["-XstartOnFirstThread"], &["first-thread"]));
     assert_eq!(out, "1");
-    assert_eq!(stdout(probe(f, &[], &["first-thread"])), "1");
+}
+
+/// Java 8 cannot be pointed at: away from its `bin`, dgpuj says where to go
+/// instead of leaving the launcher to miss `java.dll`.
+#[cfg(windows)]
+#[test]
+fn says_where_java_8_needs_it() {
+    let Some(f) = fixture() else { return };
+    if f.home_flag {
+        return;
+    }
+    let out = Command::new(DGPUJ)
+        .arg("--dgpuj-home")
+        .arg(&f.java_home)
+        .arg("-version")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{}", describe(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("install dgpuj.exe into"),
+        "{}",
+        describe(&out)
+    );
+}
+
+/// Installed in a JDK's `bin`, dgpuj is that JDK's, as `java` is.
+#[test]
+fn finds_the_jdk_it_is_installed_in() {
+    let Some(f) = fixture() else { return };
+    let name = format!("dgpuj-installed{}", env::consts::EXE_SUFFIX);
+    let copy = f.java_home.join("bin").join(name);
+    if fs::copy(DGPUJ, &copy).is_err() {
+        // A JDK that is the system's, and not ours to write into.
+        assert!(env::var_os("CI").is_none(), "cannot write into the JDK");
+        return;
+    }
+    let mut command = Command::new(&copy);
+    command.env_remove("JAVA_HOME");
+    command
+        .arg("-cp")
+        .arg(&f.classes)
+        .args(["Probe", "echo", "z"]);
+    let out = stdout(command);
+    fs::remove_file(&copy).unwrap();
+    assert_eq!(out, hex("z"));
 }
 
 /// The two things the Windows binary is for and must not need: the symbols a
