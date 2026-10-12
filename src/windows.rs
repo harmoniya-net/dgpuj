@@ -14,8 +14,9 @@ use std::ffi::CString;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
-/// HotSpot ships `jvm.dll` under `<home>\bin\server\`.
-pub const JVM_LIB_REL: &str = r"bin\server\jvm.dll";
+/// Where HotSpot keeps `jvm.dll` under a home: `bin\server`, and in a Java 8
+/// JDK under its `jre`.
+pub const JVM_LIB_RELS: &[&str] = &[r"bin\server\jvm.dll", r"jre\bin\server\jvm.dll"];
 
 #[used]
 #[no_mangle]
@@ -112,7 +113,7 @@ pub fn vm_option(option: &str) -> Result<CString, String> {
 /// the other, and the first DNS lookup dies with `InternalError: platform
 /// encoding not initialized`.
 pub fn prepare_jvm(jvm: &Path) -> Result<(), String> {
-    // `<home>\bin\server\jvm.dll` -> `<home>\bin`.
+    // `…\bin\server\jvm.dll` -> `…\bin`, whichever layout it was found in.
     let bin = jvm
         .parent()
         .and_then(Path::parent)

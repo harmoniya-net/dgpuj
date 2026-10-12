@@ -49,7 +49,8 @@ public class Probe {
                 System.out.println(depth(Integer.parseInt(args[1])));
                 break;
             case "first-thread":
-                long pid = ProcessHandle.current().pid();
+                String self = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
+                String pid = self.substring(0, self.indexOf('@'));
                 System.out.println(System.getenv("JAVA_STARTED_ON_FIRST_THREAD_" + pid));
                 break;
             case "thread":
@@ -215,6 +216,10 @@ fn says_what_was_launched() {
 #[test]
 fn takes_module_options_as_java_does() {
     let Some(f) = fixture() else { return };
+    // Modules are Java 9's, and so are their options.
+    if f.java_home.join("jre").is_dir() || !f.java_home.join("jmods").is_dir() {
+        return;
+    }
     let vm = [
         "--add-opens",
         "java.base/java.lang=ALL-UNNAMED",

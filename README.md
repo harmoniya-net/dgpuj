@@ -33,7 +33,8 @@ dgpuj [--dgpuj-home DIR | --dgpuj-jvm PATH] \
 
 - The JVM library is located from `--dgpuj-jvm`, then `--dgpuj-home`, then
   `$JAVA_HOME` — under `bin\server\jvm.dll` (Windows), `lib/server/libjvm.so`
-  (Linux), or `lib/server/libjvm.dylib` (macOS).
+  (Linux), or `lib/server/libjvm.dylib` (macOS), or where Java 8 keeps it
+  (`jre\bin\server`, `jre/lib/amd64/server`, …). Java 8 and later all work.
 - Everything after the optional `--dgpuj-*` flags is parsed like the `java`
   launcher: `-…` tokens are JVM options, the first bare token is the main class,
   the rest go to `main(String[])`.

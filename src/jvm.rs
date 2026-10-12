@@ -20,20 +20,31 @@ use jni::JNIEnv;
 use crate::platform;
 
 /// Resolve the JVM library path from an explicit dll, then a home dir, then
-/// `$JAVA_HOME` (joined with the platform's HotSpot-relative library path).
+/// `$JAVA_HOME`. Under a home it is the first of the platform's layouts that
+/// is there: Java 9 and later keep it in one place, Java 8 in another, and a
+/// Java 8 JDK in a third, under its `jre`.
 pub fn resolve(dll: Option<PathBuf>, home: Option<PathBuf>) -> Result<PathBuf, String> {
-    let path = match dll {
-        Some(p) => p,
-        None => home
-            .or_else(|| env::var_os("JAVA_HOME").map(PathBuf::from))
-            .ok_or("no JVM location: pass --dgpuj-home / --dgpuj-jvm or set JAVA_HOME")?
-            .join(platform::JVM_LIB_REL),
-    };
-    if path.is_file() {
-        Ok(path)
-    } else {
-        Err(format!("jvm library not found: {}", path.display()))
+    if let Some(path) = dll {
+        return if path.is_file() {
+            Ok(path)
+        } else {
+            Err(format!("jvm library not found: {}", path.display()))
+        };
     }
+    let home = home
+        .or_else(|| env::var_os("JAVA_HOME").map(PathBuf::from))
+        .ok_or("no JVM location: pass --dgpuj-home / --dgpuj-jvm or set JAVA_HOME")?;
+    platform::JVM_LIB_RELS
+        .iter()
+        .map(|rel| home.join(rel))
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            format!(
+                "jvm library not found under {}: looked for {}",
+                home.display(),
+                platform::JVM_LIB_RELS.join(", ")
+            )
+        })
 }
 
 /// Signature of `JNI_CreateJavaVM` exported by the JVM library.
@@ -231,6 +242,21 @@ mod tests {
 
     fn opts(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn finds_the_library_in_each_layout_a_home_may_have() {
+        let root = env::temp_dir().join(format!("dgpuj-resolve-{}", std::process::id()));
+        for rel in platform::JVM_LIB_RELS {
+            let home = root.join(rel.replace(['/', '\\'], "_"));
+            let lib = home.join(rel);
+            std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+            std::fs::write(&lib, "").unwrap();
+            assert_eq!(resolve(None, Some(home)), Ok(lib));
+        }
+        let err = resolve(None, Some(root.join("nothing"))).unwrap_err();
+        assert!(err.contains(platform::JVM_LIB_RELS[0]), "{err}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
