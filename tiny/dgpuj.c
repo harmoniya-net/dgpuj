@@ -116,7 +116,8 @@ void entry(void)
 
     /* The constants `java.exe` is built with: no arguments of its own,
      * wildcards in the class path expanded, a console. Its names for itself
-     * are only ever printed. */
+     * are only ever printed, and its version only compared with the
+     * registry's by a Java 8 that has already failed to find itself. */
     ExitProcess(((JliLaunch)GetProcAddress(jli, "JLI_Launch"))(
-        argc, argv, 0, 0, 0, 0, java, "0.0", java, java, 0, 1, 0, 0));
+        argc, argv, 0, 0, 0, 0, java, java, java, java, 0, 1, 0, 0));
 }
