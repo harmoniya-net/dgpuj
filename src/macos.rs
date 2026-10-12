@@ -9,8 +9,9 @@
 use std::ffi::CString;
 use std::path::Path;
 
-/// HotSpot ships `libjvm.dylib` under `<home>/lib/server/`.
-pub const JVM_LIB_REL: &str = "lib/server/libjvm.dylib";
+/// Where HotSpot keeps `libjvm.dylib` under a home: `lib/server`, and in a
+/// Java 8 JDK under its `jre`.
+pub const JVM_LIB_RELS: &[&str] = &["lib/server/libjvm.dylib", "jre/lib/server/libjvm.dylib"];
 
 /// The VM stays on the thread dgpuj started on. AppKit takes events on the
 /// process's first thread alone, so that is where `main` has to be for a GLFW

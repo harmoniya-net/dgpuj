@@ -12,6 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
+        # The oldest a game still asks for, the one most do, and the newest.
+        java: ['8', '17', '25']
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -20,11 +22,11 @@ jobs:
       # Two JDKs: the one the tests launch, and another to put on PATH, since
       # picking up a stranger's java.dll from there is one of the things tested.
       - uses: actions/setup-java@v5
-        with: { distribution: temurin, java-version: '21' }
+        with: { distribution: zulu, java-version: '21' }
       - run: echo "DGPUJ_TEST_OTHER_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
         shell: bash
       - uses: actions/setup-java@v5
-        with: { distribution: temurin, java-version: '17' }
+        with: { distribution: zulu, java-version: '${{ matrix.java }}' }
       - run: echo "DGPUJ_TEST_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
         shell: bash
       - run: cargo fmt --check

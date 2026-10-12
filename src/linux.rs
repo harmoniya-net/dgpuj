@@ -8,8 +8,20 @@ use std::env;
 use std::ffi::CString;
 use std::path::Path;
 
-/// HotSpot ships `libjvm.so` under `<home>/lib/server/`.
-pub const JVM_LIB_REL: &str = "lib/server/libjvm.so";
+/// Where HotSpot keeps `libjvm.so` under a home: `lib/server` since Java 9;
+/// in Java 8 under a directory named for the architecture, and in a Java 8
+/// JDK under its `jre` as well.
+pub const JVM_LIB_RELS: &[&str] = &[
+    "lib/server/libjvm.so",
+    #[cfg(target_arch = "x86_64")]
+    "jre/lib/amd64/server/libjvm.so",
+    #[cfg(target_arch = "x86_64")]
+    "lib/amd64/server/libjvm.so",
+    #[cfg(target_arch = "aarch64")]
+    "jre/lib/aarch64/server/libjvm.so",
+    #[cfg(target_arch = "aarch64")]
+    "lib/aarch64/server/libjvm.so",
+];
 
 /// The VM gets a thread of its own: HotSpot does not support the primordial
 /// thread here, and `-Xss` cannot size it.
