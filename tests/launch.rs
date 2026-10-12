@@ -195,7 +195,17 @@ fn probe(f: &Fixture, vm: &[&str], args: &[&str]) -> Command {
 }
 
 fn stdout(mut command: Command) -> String {
-    let out = command.output().unwrap();
+    // A copy made a moment ago can still be open for writing in a child
+    // another test forked meanwhile, and Linux will not run it until that
+    // child has gone on to its own `exec`.
+    let out = loop {
+        match command.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            out => break out.unwrap(),
+        }
+    };
     assert!(out.status.success(), "{}", describe(&out));
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }

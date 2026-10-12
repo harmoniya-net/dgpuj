@@ -155,10 +155,13 @@ int wmain(int argc, wchar_t **argv)
     }
     if (home == NULL)
         home = own_home();
-    if (home == NULL)
-        home = _wgetenv(L"JAVA_HOME");
-    if (home == NULL)
-        return fail(L"no JDK: pass --dgpuj-home or set JAVA_HOME", L"");
+    if (home == NULL) {
+        static wchar_t java_home[PATH_CAP];
+        DWORD length = GetEnvironmentVariableW(L"JAVA_HOME", java_home, PATH_CAP);
+        if (length == 0 || length >= PATH_CAP)
+            return fail(L"no JDK: pass --dgpuj-home or set JAVA_HOME", L"");
+        home = java_home;
+    }
 
     /* `jli.dll` is in `bin`, or in a Java 8 JDK in its `jre\bin`. */
     bin = join(home, L"bin");
