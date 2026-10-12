@@ -1,103 +1,40 @@
-//! Command-line parsing: split argv into the JVM location, VM options, main
-//! class, and program args — mirroring the `java` launcher closely enough for a
-//! classpath + main-class launch. Pure (no I/O), so it's unit-tested below.
+//! Command-line parsing: take dgpuj's own flag off the front and leave the
+//! rest for `java`, whose arguments they are. Pure (no I/O), so it's
+//! unit-tested below.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// A fully-parsed launch request.
+/// A parsed launch request.
 #[derive(Debug)]
 pub struct Invocation {
-    /// Explicit path to the JVM shared library (`--dgpuj-jvm`).
-    pub jvm_dll: Option<PathBuf>,
-    /// JDK/JRE home to derive the JVM library from (`--dgpuj-home`).
+    /// The JDK to launch (`--dgpuj-home`).
     pub java_home: Option<PathBuf>,
-    /// JVM options, in order, as `JNI_CreateJavaVM` expects them.
-    pub vm_opts: Vec<String>,
-    /// Fully-qualified main class (dotted form, as written on the CLI).
-    pub main_class: String,
-    /// Arguments passed to `main(String[])`.
-    pub prog_args: Vec<String>,
+    /// Everything else, untouched: what `java` would have been given.
+    pub java_args: Vec<OsString>,
 }
 
-/// Options the `java` launcher accepts as `--name value` and rewrites to
-/// `--name=value`, the only spelling `JNI_CreateJavaVM` reads (`java.c`,
-/// `IsModuleOption`). `--module-path` is among them and is handled with `-p`.
-const SPACED_MODULE_OPTIONS: [&str; 8] = [
-    "--upgrade-module-path",
-    "--add-modules",
-    "--enable-native-access",
-    "--limit-modules",
-    "--add-exports",
-    "--add-opens",
-    "--add-reads",
-    "--patch-module",
-];
-
 /// Parse the program arguments (excluding `argv[0]`).
-pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, String> {
+pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Invocation, String> {
     let mut args = args.into_iter().peekable();
-
-    // 1. Consume wrapper-specific leading flags.
-    let mut jvm_dll: Option<PathBuf> = None;
-    let mut java_home: Option<PathBuf> = None;
-    while let Some(a) = args.peek() {
-        match a.as_str() {
-            "--dgpuj-jvm" => {
-                args.next();
-                jvm_dll = Some(args.next().ok_or("--dgpuj-jvm needs a path")?.into());
-            }
+    let mut java_home = None;
+    while let Some(flag) = args.peek().and_then(|a| a.to_str()) {
+        match flag {
             "--dgpuj-home" => {
                 args.next();
                 java_home = Some(args.next().ok_or("--dgpuj-home needs a directory")?.into());
             }
+            // Named the VM's library while dgpuj loaded it. The JDK loads its
+            // own now, so there is nothing for a path to one to choose.
+            "--dgpuj-jvm" => {
+                return Err("--dgpuj-jvm is gone: name the JDK with --dgpuj-home".into());
+            }
             _ => break,
         }
     }
-
-    // 2. Split the rest java-style: [vm options] <main class> [program args].
-    let mut vm_opts: Vec<String> = Vec::new();
-    let mut main_class: Option<String> = None;
-    let mut prog_args: Vec<String> = Vec::new();
-    while let Some(a) = args.next() {
-        if main_class.is_some() {
-            prog_args.push(a);
-            continue;
-        }
-        match a.as_str() {
-            // JNI only honours -Djava.class.path; the -cp family is launcher sugar.
-            "-cp" | "-classpath" | "--class-path" => {
-                let cp = args.next().ok_or(format!("{a} needs a value"))?;
-                vm_opts.push(format!("-Djava.class.path={cp}"));
-            }
-            // Likewise `-p dir`: the VM only reads `--module-path=dir`.
-            "-p" | "--module-path" => {
-                let v = args.next().ok_or(format!("{a} needs a value"))?;
-                vm_opts.push(format!("--module-path={v}"));
-            }
-            // The module options `java` takes as two tokens, the VM as one.
-            // Left as two, the value would be read as the main class.
-            _ if SPACED_MODULE_OPTIONS.contains(&a.as_str()) => {
-                let v = args.next().ok_or(format!("{a} needs a value"))?;
-                vm_opts.push(format!("{a}={v}"));
-            }
-            // What `java` does itself and the VM cannot: said, rather than
-            // handed on for the next token to be taken as the main class.
-            "-jar" | "-m" | "--module" => {
-                return Err(format!(
-                    "{a} is not supported: name the main class and its class path"
-                ));
-            }
-            _ if a.starts_with('-') => vm_opts.push(a),
-            _ => main_class = Some(a),
-        }
-    }
-
     Ok(Invocation {
-        jvm_dll,
         java_home,
-        vm_opts,
-        main_class: main_class.ok_or("no main class given")?,
-        prog_args,
+        java_args: args.collect(),
     })
 }
 
@@ -106,87 +43,35 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    fn parse_ok(a: &[&str]) -> Invocation {
-        parse(a.iter().map(|s| s.to_string())).unwrap()
+    fn parse_args(a: &[&str]) -> Result<Invocation, String> {
+        parse(a.iter().map(OsString::from))
     }
 
     #[test]
-    fn splits_vm_opts_main_and_program_args() {
-        let inv = parse_ok(&["-Xmx2G", "-Dfoo=bar", "net.Main", "--user", "x"]);
-        assert_eq!(inv.vm_opts, ["-Xmx2G", "-Dfoo=bar"]);
-        assert_eq!(inv.main_class, "net.Main");
-        assert_eq!(inv.prog_args, ["--user", "x"]);
-        assert!(inv.jvm_dll.is_none() && inv.java_home.is_none());
-    }
-
-    #[test]
-    fn translates_every_classpath_flag() {
-        for flag in ["-cp", "-classpath", "--class-path"] {
-            let inv = parse_ok(&[flag, "a.jar:b.jar", "Main"]);
-            assert_eq!(inv.vm_opts, ["-Djava.class.path=a.jar:b.jar"]);
-            assert_eq!(inv.main_class, "Main");
-        }
-    }
-
-    #[test]
-    fn joins_the_module_options_java_takes_as_two_tokens() {
-        let inv = parse_ok(&[
-            "-p",
-            "libs",
-            "--add-modules",
-            "ALL-MODULE-PATH",
-            "--add-opens",
-            "java.base/java.lang=ALL-UNNAMED",
-            "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED",
-            "Main",
-        ]);
+    fn leaves_javas_arguments_as_they_were_written() {
+        let inv = parse_args(&["-Xmx2G", "-cp", "a.jar", "net.Main", "--user", "x"]).unwrap();
         assert_eq!(
-            inv.vm_opts,
-            [
-                "--module-path=libs",
-                "--add-modules=ALL-MODULE-PATH",
-                "--add-opens=java.base/java.lang=ALL-UNNAMED",
-                "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED",
-            ]
+            inv.java_args,
+            ["-Xmx2G", "-cp", "a.jar", "net.Main", "--user", "x"]
         );
-        assert_eq!(inv.main_class, "Main");
+        assert!(inv.java_home.is_none());
     }
 
     #[test]
-    fn refuses_what_only_the_java_launcher_can_do() {
-        for flag in ["-jar", "-m", "--module"] {
-            let err = parse([flag.to_string(), "x".to_string()]).unwrap_err();
-            assert!(err.contains("not supported"), "{err}");
-        }
-    }
-
-    #[test]
-    fn consumes_leading_wrapper_flags() {
-        let inv = parse_ok(&["--dgpuj-home", "/opt/jdk", "Main"]);
+    fn takes_its_own_flag_off_the_front_only() {
+        let inv = parse_args(&["--dgpuj-home", "/opt/jdk", "Main", "--dgpuj-home", "x"]).unwrap();
         assert_eq!(inv.java_home.as_deref(), Some(Path::new("/opt/jdk")));
-
-        let inv = parse_ok(&["--dgpuj-jvm", "/x/libjvm.so", "Main"]);
-        assert_eq!(inv.jvm_dll.as_deref(), Some(Path::new("/x/libjvm.so")));
+        assert_eq!(inv.java_args, ["Main", "--dgpuj-home", "x"]);
     }
 
     #[test]
-    fn program_args_after_main_are_passed_through_verbatim() {
-        // Tokens that look like flags/classpath are program args once past main.
-        let inv = parse_ok(&["Main", "-cp", "ignored", "-X"]);
-        assert_eq!(inv.main_class, "Main");
-        assert_eq!(inv.prog_args, ["-cp", "ignored", "-X"]);
-        assert!(inv.vm_opts.is_empty());
+    fn errors_on_a_home_with_no_directory() {
+        assert!(parse_args(&["--dgpuj-home"]).is_err());
     }
 
     #[test]
-    fn errors_without_a_main_class() {
-        assert!(parse(["-Xmx1G".to_string()]).is_err());
-    }
-
-    #[test]
-    fn errors_on_dangling_value_flags() {
-        assert!(parse(["-cp".to_string()]).is_err());
-        assert!(parse(["--add-opens".to_string()]).is_err());
-        assert!(parse(["--dgpuj-home".to_string()]).is_err());
+    fn says_where_the_jvm_flag_went() {
+        let err = parse_args(&["--dgpuj-jvm", "/x/libjvm.so", "Main"]).unwrap_err();
+        assert!(err.contains("--dgpuj-home"), "{err}");
     }
 }

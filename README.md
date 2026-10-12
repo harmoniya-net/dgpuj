@@ -1,71 +1,55 @@
 # dgpuj
 
-A tiny `java`-style launcher that forces the **discrete GPU** on hybrid-graphics
-machines, then runs the JVM **in-process** so the choice actually applies to
-your Java app (e.g. Minecraft). One binary, one CLI, on Windows / Linux / macOS.
+`java`, on the machine's **discrete GPU**. One binary and one launch line, on
+Windows / Linux / macOS.
 
 ## Why this exists
 
-On a hybrid laptop, Java apps default to the **integrated** GPU. The universal
-catch is that GPU selection is decided **per-process, for the process that
-creates the GL/D3D context, with no inheritance to children** — so a wrapper
-that merely *spawns* `java`/`javaw` is useless (the child is a different
-process). `dgpuj` instead applies the per-OS GPU hint to **itself** and hosts
-the JVM via `JNI_CreateJavaVM`, so the process that owns the GL context is the
-one carrying the hint.
+On a hybrid laptop, Java apps default to the **integrated** GPU. Which GPU a
+program gets is decided **for the process that creates the GL/D3D context**,
+and on Windows by looking at that process's executable. So a wrapper that
+merely *starts* `java.exe` changes nothing: the game is drawn by `java.exe`,
+which carries no hint. `dgpuj` is `java.exe` with the hint.
 
-Each platform's hint is **safe-by-default** — a no-op on non-hybrid machines:
+| OS | What dgpuj does | Notes |
+|----|-----------------|-------|
+| **Windows** | Exports `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance` from the `.exe`, then calls `JLI_Launch` | Must be the exe, not a DLL — so stock `java.exe`/`javaw.exe` (every vendor) can't carry it. Inert without a hybrid GPU. |
+| **Linux** | Sets the NVIDIA PRIME render-offload variables, then `exec`s the JDK's `java` | Only when the proprietary NVIDIA driver is present (`/proc/driver/nvidia`), and never clobbering variables you already set. |
+| **macOS** | `exec`s the JDK's `java` | Nothing to force: Apple Silicon has one GPU, and the Intel lever was an `.app` `Info.plist` key. |
 
-| OS | Mechanism | Notes |
-|----|-----------|-------|
-| **Windows** | Exports `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance` from the `.exe` | Must be the exe, not a DLL — so stock `java.exe`/`javaw.exe` (every vendor) can't carry it. Inert without a hybrid GPU. |
-| **Linux** | Sets NVIDIA PRIME render-offload env vars before launch | Only when the proprietary NVIDIA driver is present (`/proc/driver/nvidia`), and never clobbering vars you already set. |
-| **macOS** | *(nothing to force)* | Apple Silicon has one GPU; the legacy Intel lever was an `.app` `Info.plist` key, unreachable from a bare binary. Runs as a plain in-process launcher. |
+`java.exe` is itself one call, `JLI_Launch`, into the JDK's `jli.dll`, which
+reads the arguments, loads the VM and runs `main`. dgpuj makes the same call
+into the same library. What a launch line means is therefore the JDK's to say:
+`-jar`, `-cp lib\*`, `--add-opens x`, `-Xss`, agents and whatever a later Java
+adds all behave as they do under `java`, because it is the same code.
+
+It was not always so. Up to 0.4 dgpuj hosted the VM itself, through
+`JNI_CreateJavaVM`, and had to do again everything `java` does around it. Each
+thing it missed was a launch that worked under `java` and not under dgpuj.
 
 ## Usage
 
-A near drop-in for `java`:
-
 ```
-dgpuj [--dgpuj-home DIR | --dgpuj-jvm PATH] \
-      [VM options...] <main.Class> [program args...]
+dgpuj [--dgpuj-home DIR] <whatever java takes>
 ```
 
-- The JVM library is located from `--dgpuj-jvm`, then `--dgpuj-home`, then
-  `$JAVA_HOME` — under `bin\server\jvm.dll` (Windows), `lib/server/libjvm.so`
-  (Linux), or `lib/server/libjvm.dylib` (macOS), or where Java 8 keeps it
-  (`jre\bin\server`, `jre/lib/amd64/server`, …). Java 8 and later all work.
-- Everything after the optional `--dgpuj-*` flags is parsed like the `java`
-  launcher: `-…` tokens are JVM options, the first bare token is the main class,
-  the rest go to `main(String[])`.
-- `-cp` / `-classpath` / `--class-path` are translated to
-  `-Djava.class.path=` (the only form `JNI_CreateJavaVM` understands).
-- The module options `java` takes as two tokens are joined the same way:
-  `-p dir` and `--module-path dir` become `--module-path=dir`, and
-  `--add-opens x`, `--add-exports x`, `--add-modules x`, `--add-reads x`,
-  `--patch-module x`, `--limit-modules x`, `--upgrade-module-path x` and
-  `--enable-native-access x` become `--name=x`.
-- `main` runs on a thread of its own, sized by `-Xss`, as under `java`
-  (on macOS it stays on the first thread, where AppKit needs it).
-- **macOS:** `main` is always on the first thread, which LWJGL3/GLFW needs.
-  `-XstartOnFirstThread` is accepted and dropped, so a launch line written for
-  `java` works unchanged.
-
-Example:
+The JDK is `--dgpuj-home`, else the one dgpuj is installed in the `bin` of,
+else `$JAVA_HOME`.
 
 ```
-set JAVA_HOME=C:\jdk-17
-dgpuj -Xmx4G -cp client.jar;lib\lwjgl.jar net.minecraft.client.main.Main --username Dev
+dgpuj --dgpuj-home C:\jdk-17 -Xmx4G -cp client.jar;lib\* net.minecraft.client.main.Main --username Dev
 ```
 
-**Not supported:** `-jar`, `-m` / `--module`, `@argfiles`, and `*` wildcards in
-the class path, which `java` expands itself. Pass an explicit main class and a
-class path that lists its jars.
+**Java 8 on Windows** finds its own files from where its launcher is, and
+cannot be pointed at: install `dgpuj.exe` into that JDK's `bin`, beside
+`java.exe`, and leave `--dgpuj-home` out. Java 9 and later work from anywhere.
+dgpuj says so itself when asked to launch a Java 8 it is not beside.
 
-### What `java.exe` does that a JNI host has to do itself
+**Not supported:** `@argfiles` and `JDK_JAVA_OPTIONS`, which `java.exe` reads
+before it calls its library. (On Linux and macOS they work, `java` being what
+runs.)
 
-Three things made dgpuj fail on Windows machines where `java.exe` worked, and
-each is now held by a test that launches a real JDK (`tests/launch.rs`):
+### On Windows, beyond the one call
 
 - **The JDK's `bin` is put on the DLL search path.** The JDK's DLLs import each
   other by bare name, and Windows looks a bare name up beside the *executable*.
@@ -73,11 +57,14 @@ each is now held by a test that launches a real JDK (`tests/launch.rs`):
   went on to `PATH`. With a `-javaagent`, a second Java installed on the
   machine lent its `java.dll`, and the first DNS lookup died with
   `InternalError: platform encoding not initialized`.
-- **VM options are handed over in the ANSI code page**, which is how HotSpot
-  reads them. As UTF-8, a class path under `C:\Users\Олексій` named a
-  directory that does not exist.
-- **The C runtime is linked in.** `dgpuj.exe` no longer needs
-  `VCRUNTIME140.dll`, which a clean Windows does not have.
+- **Arguments are handed over in the ANSI code page**, as `java.exe` receives
+  them. As UTF-8, a class path under `C:\Users\Олексій` named a directory that
+  does not exist.
+- **The C runtime is linked in.** `dgpuj.exe` does not need `VCRUNTIME140.dll`,
+  which a clean Windows does not have.
+
+Each is held by a test that launches a real JDK (`tests/launch.rs`), on Java
+8, 17 and 25 on all three systems.
 
 ## Build
 
@@ -94,12 +81,11 @@ root (the tarball preserves the executable bit).
 
 ## How it's wired into opys
 
-[opys](https://github.com/harmoniya-net/opys) can use the **same** `command`
-across platforms: ship the released `dgpuj` binary as an artifact, point
-`command` at it, set `JAVA_HOME`, and forward the same args `java` would get.
-dgpuj then does the right per-OS thing internally — so opys needs no per-OS
-branching in the manifest. (Equivalently, on Linux opys could still set the
-PRIME env vars natively via `envs`; on macOS no GPU hint is needed at all.)
+[opys](https://github.com/harmoniya-net/opys) uses the **same** `command` on
+every platform: its `dgpuj()` plugin ships the released binary, `command`
+points at it, and the arguments are `--dgpuj-home` and then what `java` would
+get. dgpuj does the right per-OS thing internally, so a manifest needs no
+per-OS branching.
 
 ## License
 

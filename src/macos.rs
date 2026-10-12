@@ -3,39 +3,12 @@
 //! Apple Silicon has a single unified GPU, and the legacy Intel dual-GPU switch
 //! was driven by an `.app` bundle's `Info.plist`
 //! (`NSSupportsAutomaticGraphicsSwitching`), which a standalone executable can't
-//! carry. So dgpuj is just an in-process JVM launcher here, one that keeps
-//! `main` on the first thread for LWJGL/GLFW.
+//! carry. So dgpuj is `java` and nothing more here, there so that one launch
+//! line serves every platform.
 
-use std::ffi::CString;
+use std::ffi::OsString;
 use std::path::Path;
 
-/// Where HotSpot keeps `libjvm.dylib` under a home: `lib/server`, and in a
-/// Java 8 JDK under its `jre`.
-pub const JVM_LIB_RELS: &[&str] = &["lib/server/libjvm.dylib", "jre/lib/server/libjvm.dylib"];
-
-/// The VM stays on the thread dgpuj started on. AppKit takes events on the
-/// process's first thread alone, so that is where `main` has to be for a GLFW
-/// window to open: what `java -XstartOnFirstThread` arranges.
-pub const JVM_ON_FIRST_THREAD: bool = true;
-
-/// No discrete-GPU hint applies — the unified/bundle model leaves nothing to set.
-pub fn force_gpu() {}
-
-/// `-XstartOnFirstThread` is `java`'s own, and the VM refuses it as an option
-/// it does not know. dgpuj is always what it asks for, so it is dropped here.
-pub const LAUNCHER_OPTIONS: &[&str] = &["-XstartOnFirstThread"];
-
-/// Say that `main` is on the first thread, the way `java -XstartOnFirstThread`
-/// says it: LWJGL and AWT both look for this variable, named after the
-/// process, before they will open a window. Nothing else needs preparing, the
-/// JDK's libraries finding each other by `@loader_path`.
-pub fn prepare_jvm(_jvm: &Path) -> Result<(), String> {
-    let key = format!("JAVA_STARTED_ON_FIRST_THREAD_{}", std::process::id());
-    std::env::set_var(key, "1");
-    Ok(())
-}
-
-/// A VM option as the VM reads it: its bytes, which is what `java` hands on.
-pub fn vm_option(option: &str) -> Result<CString, String> {
-    CString::new(option).map_err(|_| format!("NUL byte in option: {option}"))
+pub fn launch(home: &Path, args: &[OsString]) -> Result<i32, String> {
+    crate::exec::java(home, args)
 }
