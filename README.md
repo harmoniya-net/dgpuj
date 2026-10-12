@@ -1,55 +1,68 @@
 # dgpuj
 
-`java`, on the machine's **discrete GPU**. One binary and one launch line, on
+`java`, on the machine's **discrete GPU**. One C file, one launch line, on
 Windows / Linux / macOS.
+
+```
+dgpuj <java> <whatever java takes>
+```
+
+`<java>` is the `java` to be: a path to one, or the bare word for the one on
+`PATH`. dgpuj goes in front of a launch line the way `nice` does.
+
+```
+dgpuj C:\jdk-17\bin\java.exe -Xmx4G -cp client.jar;lib\* net.minecraft.client.main.Main
+dgpuj java -jar server.jar
+```
 
 ## Why this exists
 
 On a hybrid laptop, Java apps default to the **integrated** GPU. Which GPU a
 program gets is decided **for the process that creates the GL/D3D context**,
-and on Windows by looking at that process's executable. So a wrapper that
-merely *starts* `java.exe` changes nothing: the game is drawn by `java.exe`,
-which carries no hint. `dgpuj` is `java.exe` with the hint.
+and on Windows by looking at that process's executable. So starting `java.exe`
+from something else changes nothing: the game is drawn by `java.exe`, which
+carries no hint. On Windows `dgpuj` is `java.exe` with the hint.
 
 | OS | What dgpuj does | Notes |
 |----|-----------------|-------|
 | **Windows** | Exports `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance` from the `.exe`, then calls `JLI_Launch` | Must be the exe, not a DLL — so stock `java.exe`/`javaw.exe` (every vendor) can't carry it. Inert without a hybrid GPU. |
-| **Linux** | Sets the NVIDIA PRIME render-offload variables, then `exec`s the JDK's `java` | Only when the proprietary NVIDIA driver is present (`/proc/driver/nvidia`), and never clobbering variables you already set. |
-| **macOS** | `exec`s the JDK's `java` | Nothing to force: Apple Silicon has one GPU, and the Intel lever was an `.app` `Info.plist` key. |
+| **Linux** | Sets the NVIDIA PRIME render-offload variables, then runs the rest of the line | Only when the proprietary NVIDIA driver is present (`/proc/driver/nvidia`), and never over variables you already set. |
+| **macOS** | Runs the rest of the line | Nothing to force: Apple Silicon has one GPU, and the Intel lever was an `.app` `Info.plist` key. |
 
-`java.exe` is itself one call, `JLI_Launch`, into the JDK's `jli.dll`, which
+`java.exe` is itself one call, `JLI_Launch`, into its JDK's `jli.dll`, which
 reads the arguments, loads the VM and runs `main`. dgpuj makes the same call
 into the same library. What a launch line means is therefore the JDK's to say:
-`-jar`, `-cp lib\*`, `--add-opens x`, `-Xss`, agents and whatever a later Java
-adds all behave as they do under `java`, because it is the same code.
+`-jar`, `-cp lib\*`, `--add-opens x`, `-Xss`, `@argfiles`, agents and whatever a
+later Java adds all behave as they do under `java`, because it is the same
+code.
 
-It was not always so. Up to 0.4 dgpuj hosted the VM itself, through
-`JNI_CreateJavaVM`, and had to do again everything `java` does around it. Each
-thing it missed was a launch that worked under `java` and not under dgpuj.
+It was not always so. Up to 0.4 dgpuj was a Rust program that hosted the VM
+itself, through `JNI_CreateJavaVM`, and had to do again everything `java` does
+around it. Each thing it missed was a launch that worked under `java` and not
+under dgpuj.
 
-## Usage
+## Which Java
 
-```
-dgpuj [--dgpuj-home DIR] <whatever java takes>
-```
+Any, from 8 on, JDK or JRE: all dgpuj needs is in every Java's `bin`.
 
-The JDK is `--dgpuj-home`, else the one dgpuj is installed in the `bin` of,
-else `$JAVA_HOME`.
+- **A path** names the `java` of a JDK, and that JDK is the one launched.
+  Either slash, with `.exe` or without.
+- **The bare word** is the one on `PATH`. On Windows that is asking for
+  `jli.dll` by name, which looks beside `dgpuj.exe` first and on `PATH` after:
+  so it needs a real Java `bin` there, and not only the `java.exe` shim an
+  installer may have put on `PATH` in its place.
+- **Java 8 on Windows** finds its own files from where its launcher is, and
+  cannot be pointed at: install `dgpuj.exe` into its `bin`, beside `java.exe`,
+  and give it the bare word. Java 9 and later work from anywhere.
 
-```
-dgpuj --dgpuj-home C:\jdk-17 -Xmx4G -cp client.jar;lib\* net.minecraft.client.main.Main --username Dev
-```
+## The Windows binary
 
-**Java 8 on Windows** finds its own files from where its launcher is, and
-cannot be pointed at: install `dgpuj.exe` into that JDK's `bin`, beside
-`java.exe`, and leave `--dgpuj-home` out. Java 9 and later work from anywhere.
-dgpuj says so itself when asked to launch a Java 8 it is not beside.
+It is 1.4 KB, small enough to fit in one TCP packet, which nothing needed. It
+got there by asking `jli.dll` for everything it would otherwise have brought:
+memory, the splitting of the command line, the launch. It has no C runtime,
+so it needs no `VCRUNTIME140.dll`, which a clean Windows does not have.
 
-**Not supported:** `@argfiles` and `JDK_JAVA_OPTIONS`, which `java.exe` reads
-before it calls its library. (On Linux and macOS they work, `java` being what
-runs.)
-
-### On Windows, beyond the one call
+What it does besides the one call:
 
 - **The JDK's `bin` is put on the DLL search path.** The JDK's DLLs import each
   other by bare name, and Windows looks a bare name up beside the *executable*.
@@ -57,23 +70,26 @@ runs.)
   went on to `PATH`. With a `-javaagent`, a second Java installed on the
   machine lent its `java.dll`, and the first DNS lookup died with
   `InternalError: platform encoding not initialized`.
-- **Arguments are handed over in the ANSI code page**, as `java.exe` receives
-  them. As UTF-8, a class path under `C:\Users\Олексій` named a directory that
-  does not exist.
-- **The C runtime is linked in.** `dgpuj.exe` does not need `VCRUNTIME140.dll`,
-  which a clean Windows does not have.
+- **`<java>` is cut out of the command line** before `jli.dll` splits it.
+  Shown a first word with no dash, it takes it for the main class and
+  miscounts everything after.
 
-Each is held by a test that launches a real JDK (`tests/launch.rs`), on Java
-8, 17 and 25 on all three systems.
+What it gave up for the size is being told what went wrong: with no Java where
+`<java>` says, it exits with 1 and prints nothing.
 
-## Build
+## Build and test
 
 ```
-cargo build --release
+sh build.sh [target]     # ./dgpuj or ./dgpuj.exe; the target defaults to this machine
+sh test.sh               # launches $JAVA_HOME through it, every way the tests know
 ```
 
-Windows uses the MSVC toolchain (the GPU exports use MSVC `/EXPORT:` linker
-syntax). Prebuilt archives for Windows (x64/arm64), Linux (x64), and macOS
+A Windows target builds anywhere there is clang, lld-link and llvm-dlltool, and
+needs nothing of Windows, not even its headers. The tests are a Java program,
+since a JDK is what they need anyway, and CI runs them on Java 8, 17 and 25 on
+all three systems.
+
+Prebuilt archives for Windows (x64/arm64), Linux (x64, static) and macOS
 (arm64/x64) are attached to each
 [GitHub release](https://github.com/harmoniya-net/dgpuj/releases) — `.zip` on
 Windows, `.tar.gz` elsewhere, with the `dgpuj`/`dgpuj.exe` binary at the archive
@@ -83,7 +99,7 @@ root (the tarball preserves the executable bit).
 
 [opys](https://github.com/harmoniya-net/opys) uses the **same** `command` on
 every platform: its `dgpuj()` plugin ships the released binary, `command`
-points at it, and the arguments are `--dgpuj-home` and then what `java` would
+points at it, and the arguments are the `java` to run and then what it would
 get. dgpuj does the right per-OS thing internally, so a manifest needs no
 per-OS branching.
 

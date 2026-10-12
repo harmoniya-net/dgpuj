@@ -14,85 +14,29 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
         # The oldest a game still asks for, the one most do, and the newest.
         java: ['8', '17', '25']
+        include:
+          # Windows on ARM, where an image is built differently and cannot be
+          # run anywhere else. Never in the way of the rest.
+          - { os: windows-11-arm, java: '21', target: aarch64-pc-windows-msvc, experimental: true }
+    continue-on-error: ${{ matrix.experimental == true }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
       # Two JDKs: the one the tests launch, and another to put on PATH, since
       # picking up a stranger's java.dll from there is one of the things tested.
       - uses: actions/setup-java@v5
-        with: { distribution: zulu, java-version: '21' }
-      - run: echo "DGPUJ_TEST_OTHER_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
-        shell: bash
+        with: { distribution: zulu, java-version: '17' }
+      - run: echo "OTHER_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v5
         with: { distribution: zulu, java-version: '${{ matrix.java }}' }
-      - run: echo "DGPUJ_TEST_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
-        shell: bash
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-      - run: cargo build --release
-
-  # The same launches, against dgpuj.c: one file, built with the system's compiler.
-  c:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-        java: ['8', '17', '25']
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-java@v5
-        with: { distribution: zulu, java-version: '21' }
-      - run: echo "DGPUJ_TEST_OTHER_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
-        shell: bash
-      - uses: actions/setup-java@v5
-        with: { distribution: zulu, java-version: '${{ matrix.java }}' }
-      - run: echo "DGPUJ_TEST_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
-        shell: bash
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
+      # A static binary a few kilobytes long, as a release is built.
+      - if: runner.os == 'Linux'
         run: |
-          cl /nologo /O1 /MT /W4 /WX dgpuj.c /Fe:dgpuj-c.exe
-          echo DGPUJ_TEST_BIN=%CD%\dgpuj-c.exe>> %GITHUB_ENV%
-      - name: Build (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          cc -Os -Wall -Wextra -Werror -o dgpuj-c dgpuj.c
-          echo "DGPUJ_TEST_BIN=$PWD/dgpuj-c" >> "$GITHUB_ENV"
-      - run: ls -l dgpuj-c*
-        shell: bash
-      - run: cargo test --test launch
-
-  # And against tiny/dgpuj.c, the Windows build that fits in a packet.
-  tiny:
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        java: ['8', '17', '25']
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-java@v5
-        with: { distribution: zulu, java-version: '21' }
-      - run: echo "DGPUJ_TEST_OTHER_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
-        shell: bash
-      - uses: actions/setup-java@v5
-        with: { distribution: zulu, java-version: '${{ matrix.java }}' }
-      - run: echo "DGPUJ_TEST_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
-        shell: bash
-      - name: Build
-        shell: bash
-        run: |
-          export PATH="/c/Program Files/LLVM/bin:$PATH"
-          sh tiny/build.sh dgpuj-tiny.exe
-          echo "DGPUJ_TEST_BIN=$(cygpath -w "$PWD/tiny/dgpuj-tiny.exe")" >> "$GITHUB_ENV"
-          echo "DGPUJ_TEST_TINY=1" >> "$GITHUB_ENV"
-      - run: cargo test --test launch
+          sudo apt-get install -y musl-tools
+          echo "CC=musl-gcc" >> "$GITHUB_ENV"
+      - if: runner.os == 'Windows'
+        run: echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"
+      - run: sh build.sh ${{ matrix.target }}
+      - run: sh test.sh
