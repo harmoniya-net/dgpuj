@@ -38,5 +38,5 @@ jobs:
           echo "CC=musl-gcc" >> "$GITHUB_ENV"
       - if: runner.os == 'Windows'
         run: echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"
-      - run: sh build.sh ${{ matrix.target }}
-      - run: sh test.sh
+      - run: make ${{ matrix.target && format('TARGET={0}', matrix.target) }}
+      - run: make test ${{ matrix.target && format('TARGET={0}', matrix.target) }}
