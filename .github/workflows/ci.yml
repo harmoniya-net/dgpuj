@@ -33,3 +33,39 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo build --release
+
+  # The same launches, against dgpuj.c: one file, built with the system's compiler.
+  c:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        java: ['8', '17', '25']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v5
+        with: { distribution: zulu, java-version: '21' }
+      - run: echo "DGPUJ_TEST_OTHER_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: actions/setup-java@v5
+        with: { distribution: zulu, java-version: '${{ matrix.java }}' }
+      - run: echo "DGPUJ_TEST_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          cl /nologo /O1 /MT /W4 /WX dgpuj.c /Fe:dgpuj-c.exe
+          echo DGPUJ_TEST_BIN=%CD%\dgpuj-c.exe>> %GITHUB_ENV%
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cc -Os -Wall -Wextra -Werror -o dgpuj-c dgpuj.c
+          echo "DGPUJ_TEST_BIN=$PWD/dgpuj-c" >> "$GITHUB_ENV"
+      - run: ls -l dgpuj-c*
+        shell: bash
+      - run: cargo test --test launch
