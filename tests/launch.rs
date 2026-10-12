@@ -346,7 +346,8 @@ fn starts_on_the_first_thread_when_asked() {
 #[test]
 fn says_where_java_8_needs_it() {
     let Some(f) = fixture() else { return };
-    if f.home_flag {
+    // The build that fits in a packet has no room for the sentence.
+    if f.home_flag || env::var_os("DGPUJ_TEST_TINY").is_some() {
         return;
     }
     let out = Command::new(dgpuj_bin())

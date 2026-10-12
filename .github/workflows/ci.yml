@@ -69,3 +69,30 @@ jobs:
       - run: ls -l dgpuj-c*
         shell: bash
       - run: cargo test --test launch
+
+  # And against tiny/dgpuj.c, the Windows build that fits in a packet.
+  tiny:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['8', '17', '25']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v5
+        with: { distribution: zulu, java-version: '21' }
+      - run: echo "DGPUJ_TEST_OTHER_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: actions/setup-java@v5
+        with: { distribution: zulu, java-version: '${{ matrix.java }}' }
+      - run: echo "DGPUJ_TEST_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+        shell: bash
+      - name: Build
+        shell: bash
+        run: |
+          export PATH="/c/Program Files/LLVM/bin:$PATH"
+          sh tiny/build.sh dgpuj-tiny.exe
+          echo "DGPUJ_TEST_BIN=$(cygpath -w "$PWD/tiny/dgpuj-tiny.exe")" >> "$GITHUB_ENV"
+          echo "DGPUJ_TEST_TINY=1" >> "$GITHUB_ENV"
+      - run: cargo test --test launch
