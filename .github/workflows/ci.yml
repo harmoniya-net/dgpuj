@@ -17,6 +17,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Two JDKs: the one the tests launch, and another to put on PATH, since
+      # picking up a stranger's java.dll from there is one of the things tested.
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '21' }
+      - run: echo "DGPUJ_TEST_OTHER_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '17' }
+      - run: echo "DGPUJ_TEST_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+        shell: bash
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
