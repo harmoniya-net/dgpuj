@@ -45,16 +45,77 @@ type CreateJavaVm = unsafe extern "system" fn(
 ) -> jint;
 
 /// Load the JVM in-process and run `main_class`'s `main(prog_args)`.
+///
+/// On its own thread wherever the platform allows, as `java` does: HotSpot
+/// does not support running on the primordial thread on Linux, and a thread
+/// we make is the only one whose stack `-Xss` can size.
 pub fn launch(
     jvm_path: &Path,
     vm_opts: &[String],
     main_class: &str,
     prog_args: &[String],
 ) -> Result<i32, String> {
-    // CStrings must outlive the JavaVMInitArgs that points into them.
-    let opt_cstrs: Vec<CString> = vm_opts
+    let run = || run(jvm_path, vm_opts, main_class, prog_args);
+    if platform::JVM_ON_FIRST_THREAD {
+        return run();
+    }
+    let mut thread = std::thread::Builder::new().name("main".into());
+    if let Some(size) = stack_size(vm_opts) {
+        thread = thread.stack_size(size);
+    }
+    std::thread::scope(|scope| {
+        thread
+            .spawn_scoped(scope, run)
+            .map_err(|e| format!("starting the JVM's thread: {e}"))?
+            .join()
+            .map_err(|_| "the JVM's thread panicked".to_string())?
+    })
+}
+
+/// The stack the last `-Xss<n>[k|m|g]` asks for, in bytes. `None` leaves the
+/// thread its default, and so does a size we cannot read: the VM is handed the
+/// same option and is the one to refuse it.
+fn stack_size(vm_opts: &[String]) -> Option<usize> {
+    let value = vm_opts.iter().rev().find_map(|o| o.strip_prefix("-Xss"))?;
+    let (digits, unit) = match value.char_indices().last()? {
+        (i, 'k' | 'K') => (&value[..i], 1 << 10),
+        (i, 'm' | 'M') => (&value[..i], 1 << 20),
+        (i, 'g' | 'G') => (&value[..i], 1 << 30),
+        _ => (value, 1),
+    };
+    digits.parse::<usize>().ok()?.checked_mul(unit)
+}
+
+/// The options the VM is created with: the caller's, less any that are the
+/// launcher's own on this platform, then the two properties
+/// `java` adds for every launch. `sun.java.command` is what `jps` and crash
+/// reports show, and what some programs read to restart themselves.
+fn vm_options(vm_opts: &[String], main_class: &str, prog_args: &[String]) -> Vec<String> {
+    let command = std::iter::once(main_class)
+        .chain(prog_args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    vm_opts
         .iter()
-        .map(|s| CString::new(s.as_str()).map_err(|_| format!("NUL byte in option: {s}")))
+        .filter(|o| !platform::LAUNCHER_OPTIONS.contains(&o.as_str()))
+        .cloned()
+        .chain([
+            format!("-Dsun.java.command={command}"),
+            "-Dsun.java.launcher=SUN_STANDARD".to_owned(),
+        ])
+        .collect()
+}
+
+fn run(
+    jvm_path: &Path,
+    vm_opts: &[String],
+    main_class: &str,
+    prog_args: &[String],
+) -> Result<i32, String> {
+    // CStrings must outlive the JavaVMInitArgs that points into them.
+    let opt_cstrs: Vec<CString> = vm_options(vm_opts, main_class, prog_args)
+        .iter()
+        .map(|s| platform::vm_option(s))
         .collect::<Result<_, _>>()?;
     let mut options: Vec<JavaVMOption> = opt_cstrs
         .iter()
@@ -162,4 +223,40 @@ fn drain_exception(env: &mut JNIEnv) -> bool {
 fn explain(env: &mut JNIEnv, ctx: String, e: jni::errors::Error) -> String {
     drain_exception(env);
     format!("{ctx}: {e}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn reads_the_last_stack_size_in_each_unit() {
+        assert_eq!(stack_size(&opts(&["-Xss512k"])), Some(512 << 10));
+        assert_eq!(stack_size(&opts(&["-Xss1m", "-Xss4M"])), Some(4 << 20));
+        assert_eq!(stack_size(&opts(&["-Xss1g"])), Some(1 << 30));
+        assert_eq!(stack_size(&opts(&["-Xss2097152"])), Some(2097152));
+    }
+
+    #[test]
+    fn leaves_the_default_stack_without_a_size_it_can_read() {
+        assert_eq!(stack_size(&opts(&["-Xmx2G"])), None);
+        assert_eq!(stack_size(&opts(&["-Xss"])), None);
+        assert_eq!(stack_size(&opts(&["-Xsslarge"])), None);
+    }
+
+    #[test]
+    fn adds_the_launcher_properties_after_the_callers_options() {
+        assert_eq!(
+            vm_options(&opts(&["-Xmx2G"]), "net.Main", &opts(&["--user", "x"])),
+            [
+                "-Xmx2G",
+                "-Dsun.java.command=net.Main --user x",
+                "-Dsun.java.launcher=SUN_STANDARD",
+            ]
+        );
+    }
 }

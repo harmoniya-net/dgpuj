@@ -5,10 +5,18 @@
 //! the in-process JVM spins up its GL stack is enough.
 
 use std::env;
+use std::ffi::CString;
 use std::path::Path;
 
 /// HotSpot ships `libjvm.so` under `<home>/lib/server/`.
 pub const JVM_LIB_REL: &str = "lib/server/libjvm.so";
+
+/// The VM gets a thread of its own: HotSpot does not support the primordial
+/// thread here, and `-Xss` cannot size it.
+pub const JVM_ON_FIRST_THREAD: bool = false;
+
+/// Options that are `java`'s own and never reach the VM: none here.
+pub const LAUNCHER_OPTIONS: &[&str] = &[];
 
 /// Opt into NVIDIA PRIME render offload — but only when the proprietary NVIDIA
 /// driver is actually loaded, and never clobbering values the caller already
@@ -29,4 +37,15 @@ fn set_if_unset(key: &str, val: &str) {
     if env::var_os(key).is_none() {
         env::set_var(key, val);
     }
+}
+
+/// Nothing to prepare: the JDK's libraries carry an `$ORIGIN` rpath and find
+/// each other wherever the executable is.
+pub fn prepare_jvm(_jvm: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// A VM option as the VM reads it: its bytes, which is what `java` hands on.
+pub fn vm_option(option: &str) -> Result<CString, String> {
+    CString::new(option).map_err(|_| format!("NUL byte in option: {option}"))
 }

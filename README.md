@@ -39,18 +39,44 @@ dgpuj [--dgpuj-home DIR | --dgpuj-jvm PATH] \
   the rest go to `main(String[])`.
 - `-cp` / `-classpath` / `--class-path` are translated to
   `-Djava.class.path=` (the only form `JNI_CreateJavaVM` understands).
-- **macOS:** include `-XstartOnFirstThread` for any LWJGL3/GLFW app (as every
-  Minecraft-on-macOS launch already does).
+- The module options `java` takes as two tokens are joined the same way:
+  `-p dir` and `--module-path dir` become `--module-path=dir`, and
+  `--add-opens x`, `--add-exports x`, `--add-modules x`, `--add-reads x`,
+  `--patch-module x`, `--limit-modules x`, `--upgrade-module-path x` and
+  `--enable-native-access x` become `--name=x`.
+- `main` runs on a thread of its own, sized by `-Xss`, as under `java`
+  (on macOS it stays on the first thread, where AppKit needs it).
+- **macOS:** `main` is always on the first thread, which LWJGL3/GLFW needs.
+  `-XstartOnFirstThread` is accepted and dropped, so a launch line written for
+  `java` works unchanged.
 
 Example:
 
 ```
 set JAVA_HOME=C:\jdk-17
-dgpuj -Xmx4G -cp lib\* net.minecraft.client.main.Main --username Dev
+dgpuj -Xmx4G -cp client.jar;lib\lwjgl.jar net.minecraft.client.main.Main --username Dev
 ```
 
-**Not supported:** `-jar`, `@argfiles`, module-path launches with a manifest
-main class. Pass an explicit main class + classpath.
+**Not supported:** `-jar`, `-m` / `--module`, `@argfiles`, and `*` wildcards in
+the class path, which `java` expands itself. Pass an explicit main class and a
+class path that lists its jars.
+
+### What `java.exe` does that a JNI host has to do itself
+
+Three things made dgpuj fail on Windows machines where `java.exe` worked, and
+each is now held by a test that launches a real JDK (`tests/launch.rs`):
+
+- **The JDK's `bin` is put on the DLL search path.** The JDK's DLLs import each
+  other by bare name, and Windows looks a bare name up beside the *executable*.
+  Beside `java.exe` that is the JDK; beside `dgpuj.exe` it is not, so the search
+  went on to `PATH`. With a `-javaagent`, a second Java installed on the
+  machine lent its `java.dll`, and the first DNS lookup died with
+  `InternalError: platform encoding not initialized`.
+- **VM options are handed over in the ANSI code page**, which is how HotSpot
+  reads them. As UTF-8, a class path under `C:\Users\Олексій` named a
+  directory that does not exist.
+- **The C runtime is linked in.** `dgpuj.exe` no longer needs
+  `VCRUNTIME140.dll`, which a clean Windows does not have.
 
 ## Build
 

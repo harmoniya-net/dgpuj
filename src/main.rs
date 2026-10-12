@@ -17,7 +17,8 @@
 //!   non-NVIDIA box would break GL.
 //! - macOS: nothing to force (Apple Silicon has one GPU; the legacy Intel lever
 //!   was an `.app` `Info.plist` key, out of reach of a bare binary). Runs as a
-//!   plain in-process launcher — pass `-XstartOnFirstThread` for LWJGL/GLFW.
+//!   plain in-process launcher, with `main` on the first thread as LWJGL/GLFW
+//!   need; `-XstartOnFirstThread` is accepted and dropped.
 //!
 //! CLI contract — a near drop-in for `java`:
 //!
@@ -70,5 +71,6 @@ fn run() -> Result<i32, String> {
 
     let inv = cli::parse(std::env::args().skip(1))?;
     let jvm_path = jvm::resolve(inv.jvm_dll, inv.java_home)?;
+    platform::prepare_jvm(&jvm_path)?;
     jvm::launch(&jvm_path, &inv.vm_opts, &inv.main_class, &inv.prog_args)
 }

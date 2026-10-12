@@ -19,6 +19,20 @@ pub struct Invocation {
     pub prog_args: Vec<String>,
 }
 
+/// Options the `java` launcher accepts as `--name value` and rewrites to
+/// `--name=value`, the only spelling `JNI_CreateJavaVM` reads (`java.c`,
+/// `IsModuleOption`). `--module-path` is among them and is handled with `-p`.
+const SPACED_MODULE_OPTIONS: [&str; 8] = [
+    "--upgrade-module-path",
+    "--add-modules",
+    "--enable-native-access",
+    "--limit-modules",
+    "--add-exports",
+    "--add-opens",
+    "--add-reads",
+    "--patch-module",
+];
+
 /// Parse the program arguments (excluding `argv[0]`).
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, String> {
     let mut args = args.into_iter().peekable();
@@ -54,6 +68,24 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Invocation, Stri
             "-cp" | "-classpath" | "--class-path" => {
                 let cp = args.next().ok_or(format!("{a} needs a value"))?;
                 vm_opts.push(format!("-Djava.class.path={cp}"));
+            }
+            // Likewise `-p dir`: the VM only reads `--module-path=dir`.
+            "-p" | "--module-path" => {
+                let v = args.next().ok_or(format!("{a} needs a value"))?;
+                vm_opts.push(format!("--module-path={v}"));
+            }
+            // The module options `java` takes as two tokens, the VM as one.
+            // Left as two, the value would be read as the main class.
+            _ if SPACED_MODULE_OPTIONS.contains(&a.as_str()) => {
+                let v = args.next().ok_or(format!("{a} needs a value"))?;
+                vm_opts.push(format!("{a}={v}"));
+            }
+            // What `java` does itself and the VM cannot: said, rather than
+            // handed on for the next token to be taken as the main class.
+            "-jar" | "-m" | "--module" => {
+                return Err(format!(
+                    "{a} is not supported: name the main class and its class path"
+                ));
             }
             _ if a.starts_with('-') => vm_opts.push(a),
             _ => main_class = Some(a),
@@ -97,6 +129,38 @@ mod tests {
     }
 
     #[test]
+    fn joins_the_module_options_java_takes_as_two_tokens() {
+        let inv = parse_ok(&[
+            "-p",
+            "libs",
+            "--add-modules",
+            "ALL-MODULE-PATH",
+            "--add-opens",
+            "java.base/java.lang=ALL-UNNAMED",
+            "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED",
+            "Main",
+        ]);
+        assert_eq!(
+            inv.vm_opts,
+            [
+                "--module-path=libs",
+                "--add-modules=ALL-MODULE-PATH",
+                "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                "--add-exports=java.base/sun.nio.ch=ALL-UNNAMED",
+            ]
+        );
+        assert_eq!(inv.main_class, "Main");
+    }
+
+    #[test]
+    fn refuses_what_only_the_java_launcher_can_do() {
+        for flag in ["-jar", "-m", "--module"] {
+            let err = parse([flag.to_string(), "x".to_string()]).unwrap_err();
+            assert!(err.contains("not supported"), "{err}");
+        }
+    }
+
+    #[test]
     fn consumes_leading_wrapper_flags() {
         let inv = parse_ok(&["--dgpuj-home", "/opt/jdk", "Main"]);
         assert_eq!(inv.java_home.as_deref(), Some(Path::new("/opt/jdk")));
@@ -122,6 +186,7 @@ mod tests {
     #[test]
     fn errors_on_dangling_value_flags() {
         assert!(parse(["-cp".to_string()]).is_err());
+        assert!(parse(["--add-opens".to_string()]).is_err());
         assert!(parse(["--dgpuj-home".to_string()]).is_err());
     }
 }
