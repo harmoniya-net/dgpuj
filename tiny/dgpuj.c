@@ -1,25 +1,31 @@
 /*
  * dgpuj for Windows, small enough to fit in one TCP packet.
  *
- * The same program as ../dgpuj.c: `java.exe` with the two symbols a GPU
- * driver looks for. What makes it small is what it does without, and whom it
- * asks instead, which is nearly always the JDK's own `jli.dll`:
+ *   dgpuj <java> <whatever java takes>
+ *
+ * `<java>` is the `java` to be: a path to one, `C:\jdk\bin\java.exe`, or the
+ * bare word, for the one on PATH. dgpuj goes in front of a launch line the
+ * way `nice` does, and what it does to it is be that `java` itself, with the
+ * two symbols a GPU driver looks for exported from the executable.
+ *
+ * What makes it small is what it does without, and whom it asks instead,
+ * which is nearly always the JDK's own `jli.dll`:
  *
  * - No C runtime: no `main`, no `malloc`, no `printf`. Memory is
- *   `JLI_MemAlloc` and an error is `JLI_ReportErrorMessage`.
+ *   `JLI_MemAlloc`.
  * - No parsing of arguments. `JLI_CmdToArgs` splits the command line, which is
- *   how `java.exe` gets its own `argv`; all that is read here is the one flag
- *   that says where `jli.dll` is, and it is cut out again before that.
+ *   how `java.exe` gets its own `argv`; all that is read here is its first
+ *   word, which says where `jli.dll` is, and it is cut out again before that.
  * - No Unicode, the launcher reading the command line as ANSI anyway.
- * - No looking at files, and no asking where dgpuj itself is. Whether a JDK
- *   is there is whether its `jli.dll` loads; whether it is Java 8 is whether
- *   that lacks a function Java 9 added; and whether dgpuj is in that JDK's
- *   `bin` is whether the `jli.dll` beside dgpuj is the same one.
+ * - No looking at files, and no looking for `java`. A JDK is there if its
+ *   `jli.dll` loads, and finding the one on PATH is asking Windows for
+ *   `jli.dll` by name alone, which looks beside dgpuj first: so the same
+ *   word serves a dgpuj installed in a JDK's `bin`, where Java 8 needs it.
  *
- * It gives up two things for it. There is no `JAVA_HOME` to fall back on: the
- * JDK is `--dgpuj-home`, or the one dgpuj is in the `bin` of. And with no JDK
- * found there is nothing loaded to report it with, so it exits with 1 and
- * says nothing.
+ * It gives up being told what went wrong. With no JDK where `<java>` says
+ * there is nothing loaded to report it with, so it exits with 1 and says
+ * nothing; and a Java 8 that dgpuj is not beside fails in the JDK's words,
+ * "could not find java.dll", not ours.
  *
  * Built by ./build.sh, with a linker told to align nothing.
  */
@@ -30,7 +36,7 @@ typedef void *HANDLE;
 
 IMPORT char *GetCommandLineA(void);
 IMPORT int SetDllDirectoryA(const char *);
-IMPORT HANDLE LoadLibraryExA(const char *, HANDLE, DWORD);
+IMPORT HANDLE LoadLibraryA(const char *);
 IMPORT void *GetProcAddress(HANDLE, const char *);
 IMPORT void ExitProcess(unsigned);
 
@@ -40,12 +46,6 @@ __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 
 #define PATH 260
-/* LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32: beside
- * dgpuj and nowhere else, `PATH` least of all. */
-#define BESIDE 0xA00
-/* LOAD_WITH_ALTERED_SEARCH_PATH: what the library needs is looked for where
- * the library is. */
-#define ITS_OWN 8
 
 /* One of `jli.dll`'s own arguments, as `JLI_GetStdArgs` hands them out. */
 typedef struct { char *arg; char has_wildcard; } StdArg;
@@ -63,44 +63,46 @@ static void put(char *to, const char *from)
 void entry(void)
 {
     static const char java[] = "java";
+    /* `<java>`, with room for the `\\jli.dll` that takes its last word's place. */
     char bin[PATH + 16];
-    char *line = GetCommandLineA(), *c = line, *end = bin, *flag_at, stop, **argv;
-    const char *flag = "--dgpuj-home ";
-    /* The JDK dgpuj is in the `bin` of, as `java.exe` is, if it is in one. */
-    HANDLE jli = LoadLibraryExA("jli.dll", 0, BESIDE);
+    char *line = GetCommandLineA(), *c = line, *word, *end = bin, *name = bin;
+    char stop, **argv;
+    HANDLE jli;
     StdArg *args;
     int argc, i;
 
-    /* Past the program's own name, to what may be dgpuj's one flag. */
+    /* Past the program's own name, to the `java` it is to be. */
     stop = *c == '"' ? '"' : ' ';
     do c++; while (*c && *c != stop);
     if (*c) c++;
     while (*c == ' ') c++;
-    flag_at = c;
-    while (*flag && *c == *flag) c++, flag++;
+    word = c;
 
-    if (!*flag) {
-        /* --dgpuj-home DIR: `jli.dll` cannot be asked, being what it finds. */
-        while (*c == ' ') c++;
-        stop = *c == '"' ? (c++, '"') : ' ';
-        while (*c && *c != stop && end < bin + PATH) *end++ = *c++;
-        if (*c == '"') c++;
-
-        /* And cannot be shown it either. `jli.dll` splits the command line
-         * and keeps count of what it split, to tell `main`'s arguments from
-         * `java`'s; shown a flag it does not know, it takes DIR for the main
-         * class and its count for a longer list than it allocated. So the
-         * flag is cut out of the line before `jli.dll` reads it. */
-        put(flag_at, c);
-        put(end, "\\bin\\jli.dll");
-        jli = LoadLibraryExA(bin, 0, ITS_OWN);
-
-        /* The JDK's DLLs import each other by bare name, and Windows looks a
-         * bare name up beside the executable: make that the JDK's `bin`, or
-         * another Java on PATH lends its `java.dll`. */
-        end[4] = 0;
-        SetDllDirectoryA(bin);
+    /* Copied with its slashes turned the way `LoadLibrary` wants them, and
+     * with a note of where its directory ends, if it has one. */
+    stop = *c == '"' ? (c++, '"') : ' ';
+    while (*c && *c != stop && end < bin + PATH) {
+        char ch = *c++;
+        if (ch == '/') ch = '\\';
+        if (ch == '\\') name = end;
+        *end++ = ch;
     }
+    if (*c == '"') c++;
+
+    /* `jli.dll` is not to see that word. It splits the command line and keeps
+     * count of what it split, to tell `main`'s arguments from `java`'s, and
+     * would take a word with no dash for the main class. */
+    put(word, c);
+
+    /* The JDK's DLLs import each other by bare name, and Windows looks a
+     * bare name up beside the executable: make that the JDK's `bin`, or
+     * another Java on PATH lends its `java.dll`. For a bare `java` this is
+     * the empty string, which takes the current directory out of the search
+     * and leaves the rest: beside dgpuj, then the system's, then PATH. */
+    *name = 0;
+    SetDllDirectoryA(bin);
+    put(name, &"\\jli.dll"[name == bin]);
+    jli = LoadLibraryA(bin);
     if (!jli)
         ExitProcess(1);
 
